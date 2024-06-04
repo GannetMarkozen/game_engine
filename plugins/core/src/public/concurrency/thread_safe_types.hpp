@@ -213,6 +213,15 @@ struct Locked {
 		}
 	}
 
+	//~
+	// Unsafe.
+	FORCEINLINE constexpr fn get() -> T& { return value; }
+	FORCEINLINE constexpr fn get() const -> const T& { return value; }
+
+	FORCEINLINE constexpr fn get_mutex() -> MutexType& { return mutex; }
+	FORCEINLINE constexpr fn get_mutex() const -> const MutexType& { return mutex; }
+	//~
+
 private:
 	T value;
 	MutexType mutex;
@@ -256,6 +265,15 @@ struct RWLocked {
 			return std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...);
 		}
 	}
+
+	//~
+	// Unsafe.
+	FORCEINLINE constexpr fn get() -> T& { return value; }
+	FORCEINLINE constexpr fn get() const -> const T& { return value; }
+
+	FORCEINLINE constexpr fn get_mutex() -> SharedMutexType& { return mutex; }
+	FORCEINLINE constexpr fn get_mutex() const -> const SharedMutexType& { return mutex; }
+	//~
 
 private:
 	T value;

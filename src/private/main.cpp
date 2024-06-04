@@ -55,26 +55,29 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 
 	constexpr auto COUNT = 1000;
 	for (i32 i = 0; i < COUNT; ++i) {
-		TaskGraph::get().parallel_for(1000, [&](const i32 i) -> void { ++count; });
+		TaskGraph::get().parallel_for(1000, [&](const i32 i) {});
 		fmt::println("Executed loop {}", i);
 	}
 
 	const auto end = std::chrono::high_resolution_clock::now();
 
-	fmt::println("Average time == {}\ncount == {}", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count(), count.load());
+	fmt::println("Average time == {}\ncount == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count(), count.load());
 
 	request_exit = true;
 
-	std::this_thread::sleep_for(std::chrono::seconds{5});
+	//std::this_thread::sleep_for(std::chrono::seconds{5});
 }
 
 fn main(const i32 args_count, const char* args[]) -> i32 {
 	using namespace core;
 
+	
+
 	TaskGraph::get().initialize(32);
 
 	TaskGraph::get().enqueue(main_loop, task::Priority::NORMAL, task::Thread::MAIN);
 	TaskGraph::get().do_work<ThreadType::MAIN>([&] { return request_exit; });
+	//TaskGraph::get().do_work<ThreadType::MAIN>([&] { return request_exit; });
 
 	// Shut down task graph (stalls for all previous tasks to finish first).
 	TaskGraph::get().deinitialize();

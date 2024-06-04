@@ -3,7 +3,6 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <variant>
 #include <tuple>
 #include <array>
 #include <span>
@@ -111,6 +110,18 @@ static_assert(sizeof(f64) == 8);
 // @NOTE: Requires ifdefs per-platform. This should be correct for all our use-cases though.
 constexpr usize CACHE_LINE_SIZE = 64;
 
+enum NoInit { NO_INIT };
+
+template<typename T, typename... Args>
+concept Invokable = requires(T&& t, Args&&... args) {
+	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) };
+};
+
+template<typename T, typename Return, typename... Args>
+concept InvokableReturns = requires(T&& t, Args&&... args) {
+	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) } -> std::same_as<Return>;
+};
+
 template<typename T, typename Allocator = std::allocator<T>>
 using Array = std::vector<T, Allocator>;
 
@@ -123,8 +134,6 @@ using StaticArray = std::array<T, SIZE>;
 template<typename T1, typename T2>
 using Pair = std::pair<T1, T2>;
 
-template<typename... Ts>
-using Variant = std::variant<Ts...>;
 
 template<typename... Ts>
 using Tuple = std::tuple<Ts...>;
@@ -153,16 +162,4 @@ class Fn;
 template<typename Return, typename... Params>
 class Fn<Return(Params...)> final : public std::function<Return(Params...)> {
 	using std::function<Return(Params...)>::function;
-};
-
-enum NoInit { NO_INIT };
-
-template<typename T, typename... Args>
-concept Invokable = requires(T&& t, Args&&... args) {
-	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) };
-};
-
-template<typename T, typename Return, typename... Args>
-concept InvokableReturns = requires(T&& t, Args&&... args) {
-	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) } -> std::same_as<Return>;
 };
