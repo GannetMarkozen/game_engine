@@ -46,7 +46,7 @@ fn main() -> i32 {
 	return EXIT_SUCCESS;
 }
 
-#else
+#elif 01
 
 fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 	using namespace core;
@@ -54,15 +54,18 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 	const auto start = std::chrono::high_resolution_clock::now();
 
 	constexpr auto COUNT = 1000;
-	//for (i32 i = 0; i < COUNT; ++i) {
-	TaskGraph::get().parallel_for(10000 * COUNT, [&](const i32 i) -> void { ++count; });
-	//}
+	for (i32 i = 0; i < COUNT; ++i) {
+		TaskGraph::get().parallel_for(1000, [&](const i32 i) -> void { ++count; });
+		fmt::println("Executed loop {}", i);
+	}
 
 	const auto end = std::chrono::high_resolution_clock::now();
 
 	fmt::println("Average time == {}\ncount == {}", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count(), count.load());
 
 	request_exit = true;
+
+	std::this_thread::sleep_for(std::chrono::seconds{5});
 }
 
 fn main(const i32 args_count, const char* args[]) -> i32 {
@@ -82,4 +85,54 @@ fn main(const i32 args_count, const char* args[]) -> i32 {
 
 	return EXIT_SUCCESS;
 }
+#else
+
+fn main() -> i32 {
+
+	fmt::println("number == {}", 10000);
+
+	RWLocked<i32> number{0};
+
+	Array<std::thread> threads;
+
+	std::atomic<u32> readers_count = 0;
+	for (i32 i = 0; i < 2; ++i) {
+		threads.push_back(std::thread{[&] {
+			for (i32 j = 0; j < 100000; ++j) {
+				number.read([&](const i32& in_number) {
+					++readers_count;
+					--readers_count;
+				});
+			}
+		}});
+	}
+
+	for (i32 i = 0; i < 2; ++i) {
+		threads.push_back(std::thread{[&] {
+			for (i32 j = 0; j < 100000; ++j) {
+				number.write([](i32& in_number) {
+					++in_number;
+				});
+			}
+		}});
+	}
+
+	const auto start = std::chrono::high_resolution_clock::now();
+
+	for (auto& thread : threads) {
+		thread.join();
+	}
+
+	const auto end = std::chrono::high_resolution_clock::now();
+
+	threads.clear();
+
+
+	fmt::println("Duration == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+
+	fmt::println("number == {}", number.read([](const i32& in_number) { return in_number; }));
+
+	return EXIT_SUCCESS;
+}
+
 #endif

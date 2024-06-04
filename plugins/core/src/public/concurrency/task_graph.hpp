@@ -8,8 +8,10 @@
 #include <memory>
 #include <chrono>
 #include <thread>
+#include <condition_variable>
+#include <shared_mutex>
 
-#if 1
+#if 01
 
 namespace core {
 enum class ThreadType : u8 { MAIN, WORKER };
@@ -20,6 +22,7 @@ namespace task {
 enum class Priority : u8 { HIGH, NORMAL, LOW };
 enum class Thread : u8 { MAIN, ANY };// Maybe add a render thread for pinning tasks to rendering etc?
 static constexpr usize PRIORITY_COUNT = 3;
+static constexpr usize THREAD_COUNT = 2;
 }
 
 namespace impl {
@@ -55,6 +58,170 @@ private:
 	task::Thread thread = task::Thread::ANY;
 	volatile bool completed = false;
 };
+
+#if 0
+
+
+struct alignas(CACHE_LINE_SIZE) TaskGraph {
+private:
+	struct ThreadCondition {
+		std::condition_variable_any condition;
+		SharedMutex mutex;
+		std::atomic<bool> is_asleep = false;
+		bool is_stale = false;// The thread has been destroyed already.
+	};
+
+	struct WorkerThread {
+		std::thread thread;
+		SharedPtr<ThreadCondition> condition;
+	};
+
+	template<ThreadType THREAD>
+	fn try_dequeue_task() -> SharedPtr<Task> {
+		SharedPtr<Task> task = nullptr;
+		if constexpr (THREAD != ThreadType::WORKER) {
+			for (usize i = 0; i < task::PRIORITY_COUNT; ++i) {
+				if (enqueued_tasks[static_cast<usize>(THREAD)][i].try_dequeue(task)) {
+					return task;
+				}
+			}
+		}
+
+		for (usize i = 0; i < task::PRIORITY_COUNT; ++i) {
+			if (enqueued_tasks[static_cast<usize>(task::Thread::ANY)][i].try_dequeue(task)) {
+				return task;
+			}
+		}
+
+		return task;
+	}
+
+public:
+	[[nodiscard]]
+	FORCEINLINE static fn get() -> TaskGraph&;
+
+	fn initialize(const usize num_workers) -> void {
+		ASSERT(num_workers > 0);
+		worker_threads.write([&](Array<WorkerThread>& worker_threads) {
+			worker_threads.reserve(num_workers);
+			for (usize i = 0; i < num_workers; ++i) {
+				worker_threads.push_back(WorkerThread{
+					.thread{[this] {
+						do_work<ThreadType::WORKER>([&] { return false; });
+					}},
+					.condition = std::make_shared<ThreadCondition>(),
+				});
+			}
+		});
+	}
+
+	template<ThreadType THREAD>
+	fn do_work(InvokableReturns<bool> auto&& should_exit) -> void {
+		auto& thread_condition = [&]() -> ThreadCondition& {
+			if constexpr (THREAD != ThreadType::WORKER) {
+				return named_thread_conditions[static_cast<usize>(THREAD)];
+			} else {
+				// Unsafe but should be okay in this case (since ThreadCondition should have the same lifespan as the thread it's being used in).
+				return worker_threads.read([](const Array<WorkerThread>& worker_threads) -> ThreadCondition& {
+					return *std::find_if(worker_threads.begin(), worker_threads.end(), [&](const WorkerThread& thread) { return thread.thread.get_id() == std::this_thread::get_id(); })->condition;
+				});
+			}
+		}();
+		do_work_internal<THREAD>(thread_condition, FORWARD_AUTO(should_exit));
+	}
+
+	template<ThreadType THREAD>
+	fn do_work_internal(ThreadCondition& thread_condition, InvokableReturns<bool> auto&& should_exit) -> void {
+		static constexpr auto THREAD_INDEX = static_cast<usize>(THREAD);
+
+		while (!std::invoke(should_exit)) {
+			SharedPtr<Task> task = nullptr;
+
+			// Try find a task or sleep loop.
+			while (!(task = try_dequeue_task<THREAD>())) [[unlikely]] {
+				if (std::invoke(should_exit) || (should_terminate && num_tasks_in_flight.load(std::memory_order_relaxed) == 0)) [[unlikely]] {
+					return;
+				}
+
+				// .wait unlocks this mutex after the thread has been put to sleep.
+				UniqueLock lock{thread_condition.mutex};
+
+				// Try dequeueing one last time during the lock in-case a crazy race-condition occurred where a task
+				// was enqueued in-between the previous dequeue and the lock so this thread won't be woken up. Performance
+				// doesn't matter here since this thread is going to go to sleep anyways otherwise.
+				if ((task = try_dequeue_task<THREAD>())) break;
+
+				thread_condition.is_asleep = true;
+
+				// We don't care about spurious wake-ups in this case since nothing bad will happen.
+				thread_condition.condition.wait(lock);
+			}
+
+			task->functor(task);
+
+			// Decrement number of tasks in flight after the task since the task can enqueue tasks and don't want this to prematurely hit 0.
+			if (--num_tasks_in_flight == 0 && should_terminate) [[unlikely]] {
+				// Wake up all threads.
+				return;
+			}
+
+			Array<SharedPtr<Task>> subsequents = [&] {
+				ScopeLock lock{task->add_subsequents_mutex};
+
+				task->completed = true;
+
+				return std::move(task->subsequent_tasks);
+			}();
+
+			for (auto& subsequent : subsequents) {
+				if (--subsequent->prerequisites_remaining == 0) {
+					enqueue_no_prerequisites(std::move(subsequent));
+				}
+			}
+		}
+	}
+
+	fn enqueue(Fn<void(const SharedPtr<Task>&)> functor, const task::Priority priority = task::Priority::NORMAL, const task::Thread thread = task::Thread::ANY, const Span<const SharedPtr<Task>>& prerequisites = {}) -> SharedPtr<Task> {
+		const auto task = std::make_shared<Task>(priority, thread);
+
+		u32 num_prerequisites = 0;
+		if (prerequisites.size() > 0) {
+			for (auto& prerequisite : prerequisites) {
+				prerequisite->add_subsequents_mutex.lock();
+
+				if (!prerequisite->has_completed()) {
+					++num_prerequisites;
+				}
+			}
+
+			task->prerequisites_remaining = num_prerequisites;
+
+			for (auto& prerequisite : prerequisites) {
+				prerequisite->add_subsequents_mutex.unlock();
+			}
+		}
+
+		if (num_prerequisites > 0) {
+			enqueue_no_prerequisites(task);
+		}
+
+		return task;
+	}
+
+	fn enqueue_no_prerequisites(SharedPtr<Task> task) -> void {
+
+	}
+
+
+private:
+	ConcurrentQueue<SharedPtr<Task>> enqueued_tasks[task::THREAD_COUNT][task::PRIORITY_COUNT];
+	ThreadCondition named_thread_conditions[NAMED_THREAD_COUNT];
+	RWLocked<Array<WorkerThread>> worker_threads;
+	std::atomic<u32> num_tasks_in_flight = 0;
+	volatile bool should_terminate = false;
+};
+
+#else
 
 struct alignas(CACHE_LINE_SIZE) TaskGraph {
 	[[nodiscard]] FORCEINLINE static fn get() -> TaskGraph&;
@@ -98,14 +265,18 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 		while (!std::invoke(FORWARD_AUTO(request_exit))) [[likely]] {
 			// Try dequeue a task.
 			SharedPtr<Task> task = nullptr;
-			while (!(task = try_dequeue_task<THREAD>())) {
-				if (std::invoke(FORWARD_AUTO(request_exit)) || (should_terminate && num_tasks_in_flight.load() == 0)) [[unlikely]] {
+			while (!(task = try_dequeue_task<THREAD>())) [[unlikely]] {
+				UniqueLock lock{thread_condition_mutexes[THREAD_INDEX]};
+
+				if ((task = try_dequeue_task<THREAD>())) [[likely]] {
+					break;
+				}
+
+				if (std::invoke(FORWARD_AUTO(request_exit)) || (should_terminate && num_tasks_in_flight.load(std::memory_order_relaxed) == 0)) [[unlikely]] {
 					return;
 				}
 
-				std::mutex mutex;
-				std::unique_lock lock{mutex};
-				thread_conditions[static_cast<usize>(THREAD)].wait(lock);
+				thread_conditions[THREAD_INDEX].wait(lock);
 			}
 
 			// Execute task.
@@ -114,7 +285,7 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 			// Decrement after invoking the task in-case the task enqueues other tasks.
 			// Don't want this number to prematurely hit 0. If this does hit 0 and we want to exit.
 			// Wake up all other threads to let them know.
-			const auto current_num_tasks_in_flight = --num_tasks_in_flight;
+			const auto current_num_tasks_in_flight = num_tasks_in_flight.fetch_sub(1, std::memory_order_relaxed) - 1;
 			if (should_terminate && current_num_tasks_in_flight == 0) [[unlikely]] {
 				wake_up_all_threads();
 				return;
@@ -123,7 +294,7 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 			// Take the subsequent tasks. This lock should be as short as possible.
 			// @TODO: This subsequents array destructor is the slowest thing in this function.
 			Array<SharedPtr<Task>> subsequents = [&] {
-				std::lock_guard lock{task->add_subsequents_mutex};
+				ScopeLock lock{task->add_subsequents_mutex};
 
 				task->completed = true;
 
@@ -153,7 +324,7 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 
 		// The queue can occasionally fail if there's too much thread-contention even if it's not empty. Keep attempting to
 		// dequeue a task as long as there are tasks in the queue.
-		while (num_tasks_enqueued[static_cast<usize>(THREAD)].load(std::memory_order_relaxed) > 0) {
+		//while (num_tasks_enqueued[static_cast<usize>(THREAD)].load(std::memory_order_relaxed) > 0) {
 			// First try to dequeue named-thread tasks if this is running on a named-thread in order of priority (high -> low).
 			if constexpr (THREAD != ThreadType::WORKER) {
 				for (auto& queue : named_thread_queues[static_cast<usize>(THREAD)]) {
@@ -178,8 +349,8 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 				}
 			}
 
-			std::this_thread::yield();
-		}
+		//	std::this_thread::yield();
+		//}
 
 		return task;
 	}
@@ -212,7 +383,7 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 		}
 
 		// Increment even for subsequent tasks.
-		++num_tasks_in_flight;
+		num_tasks_in_flight.fetch_add(1, std::memory_order_release);
 
 		// No prerequisites; enqueue immediately - otherwise will be automatically enqueued when prerequisites complete.
 		if (num_prerequisites == 0) {
@@ -237,6 +408,13 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 		const auto priority_index = static_cast<usize>(priority);
 		const auto thread_index = static_cast<usize>(thread);
 
+		// This will only ever block if a thread is about to go to sleep while
+		// a task on another thread is being enqueued.
+		//std::shared_lock lock{thread_condition_mutexes[thread_index]};
+		if (wake_up_thread) {
+			thread_condition_mutexes[thread_index].lock_shared();
+		}
+
 		if (thread == task::Thread::ANY) {
 			for (auto& num : num_tasks_enqueued) {
 				++num;
@@ -256,6 +434,8 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 				case task::Thread::ANY: 	return ThreadType::WORKER;
 				}
 			}());
+
+			thread_condition_mutexes[thread_index].unlock_shared();
 		}
 	}
 
@@ -285,9 +465,9 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 	fn busy_wait_for_tasks_to_complete(const Span<const SharedPtr<Task>>& tasks) -> void {
 		volatile bool all_tasks_complete = false;
 
-		enqueue([&] {
+		enqueue([&, this_thread_type = get_thread_type()] {
 			all_tasks_complete = true;
-			wake_up_all_threads_of_type(get_thread_type());
+			wake_up_all_threads_of_type(this_thread_type);
 		}, task::Priority::HIGH, task::Thread::ANY, tasks);
 
 		do_work([&] { return all_tasks_complete; });
@@ -315,13 +495,28 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 		volatile bool should_exit = false;
 
 		enqueue([&, this_thread_type = get_thread_type()] {
+			ScopeSharedLock lock{thread_condition_mutexes[static_cast<usize>(this_thread_type)]};
+
 			should_exit = true;
 			wake_up_all_threads_of_type(this_thread_type);
 		}, task::Priority::HIGH, task::Thread::ANY, tasks, false);
 
-		wake_up_all_threads();
+
+		{
+			for (auto& mutex : thread_condition_mutexes) {
+				mutex.lock_shared();
+			}
+
+			wake_up_all_threads();
+
+			for (auto& mutex : thread_condition_mutexes) {
+				mutex.unlock_shared();
+			}
+		}
 
 		do_work([&] { return should_exit; });
+
+		fmt::println("continued");
 	}
 
 	// Expensive.
@@ -347,7 +542,8 @@ struct alignas(CACHE_LINE_SIZE) TaskGraph {
 
 private:
 	Array<std::thread> worker_threads;
-	std::condition_variable thread_conditions[THREAD_TYPE_COUNT];
+	std::condition_variable_any thread_conditions[THREAD_TYPE_COUNT];
+	SharedMutex thread_condition_mutexes[THREAD_TYPE_COUNT];
 	std::atomic<u32> num_tasks_enqueued[THREAD_TYPE_COUNT]{};
 	std::atomic<u32> num_tasks_in_flight = 0;// All tasks in-flight including subsequents.
 	volatile bool should_terminate = false;
@@ -362,6 +558,7 @@ EXPORT_API inline TaskGraph task_graph_singleton{};
 FORCEINLINE fn TaskGraph::get() -> TaskGraph& {
 	return impl::task_graph_singleton;
 }
+#endif
 }
 
 #elif 1
