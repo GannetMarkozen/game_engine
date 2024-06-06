@@ -321,6 +321,12 @@ private:
 	struct Node {
 		T value;
 		std::atomic<Node*> next;
+		u64 version;
+	};
+
+	struct TaggedNodePtr {
+		Node* node;
+		u64 counter;
 	};
 
 public:
@@ -348,15 +354,14 @@ public:
 	NOINLINE fn try_dequeue(T& out) -> bool {
 		Node* old_head = head.load(std::memory_order_relaxed);
 
-		while (old_head && !head.compare_exchange_weak(old_head, old_head->next.load(std::memory_order_acq_rel))) {}
+		while (old_head && !head.compare_exchange_weak(old_head, old_head->next.load(std::memory_order_relaxed))) {}
 
 		if (old_head) {
 			out = std::move(old_head->value);
 			delete old_head;
-			return true;
 		}
 
-		return false;
+		return !!old_head;
 	}
 
 private:

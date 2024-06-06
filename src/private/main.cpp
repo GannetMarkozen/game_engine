@@ -48,13 +48,13 @@ fn main() -> i32 {
 
 #elif 01
 
+
 fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 	using namespace core;
 
 	const auto start = std::chrono::high_resolution_clock::now();
 
-	constexpr auto COUNT = 1000;
-	for (i32 i = 0; i < COUNT; ++i) {
+	for (i32 i = 0; i < 1000; ++i) {
 		TaskGraph::get().parallel_for(1000, [&](const i32 i) {});
 		fmt::println("Executed loop {}", i);
 	}
@@ -68,23 +68,40 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 	//std::this_thread::sleep_for(std::chrono::seconds{5});
 }
 
+#include "core/src/public/ecs/system.hpp"
+#include "core/src/public/math.hpp"
+
+enum class SomeGroup : u8 {
+	START, MIDDLE, END
+};
+
+enum class SomeOtherGroup : u8 {
+	START, END
+};
+
 fn main(const i32 args_count, const char* args[]) -> i32 {
 	using namespace core;
+	using namespace core::ecs;
 
-	
+	return EXIT_SUCCESS;
+
+
+#if 01
 
 	TaskGraph::get().initialize(32);
 
 	TaskGraph::get().enqueue(main_loop, task::Priority::NORMAL, task::Thread::MAIN);
 	TaskGraph::get().do_work<ThreadType::MAIN>([&] { return request_exit; });
-	//TaskGraph::get().do_work<ThreadType::MAIN>([&] { return request_exit; });
 
 	// Shut down task graph (stalls for all previous tasks to finish first).
 	TaskGraph::get().deinitialize();
 
 	//'fmt::println("Duration == {}.\nCount == {}.", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count(), count.load(std::memory_order_relaxed));
 
+	
+
 	fmt::println("Completed!");
+#endif
 
 	return EXIT_SUCCESS;
 }

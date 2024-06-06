@@ -7,6 +7,7 @@
 #include <array>
 #include <span>
 #include <memory>
+#include <string>
 #include <optional>
 #include <functional>
 #include <fmt/printf.h>
@@ -100,6 +101,7 @@ using u32 = uint32_t;
 using i64 = int64_t;
 using u64 = uint64_t;
 using usize = size_t;
+using uptr = uintptr_t;
 
 using f32 = float;
 using f64 = double;
@@ -111,6 +113,9 @@ static_assert(sizeof(f64) == 8);
 constexpr usize CACHE_LINE_SIZE = 64;
 
 enum NoInit { NO_INIT };
+
+template<typename T>
+concept Enum = std::is_enum_v<T>;
 
 template<typename T, typename... Args>
 concept Invokable = requires(T&& t, Args&&... args) {
@@ -134,6 +139,7 @@ using StaticArray = std::array<T, SIZE>;
 template<typename T1, typename T2>
 using Pair = std::pair<T1, T2>;
 
+using String = std::string;
 
 template<typename... Ts>
 using Tuple = std::tuple<Ts...>;

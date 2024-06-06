@@ -25,7 +25,7 @@ static constexpr usize NAMED_THREAD_COUNT = THREAD_COUNT - 1;
 }
 
 // This enum should match up with task::Thread. It's just semantically different.
-namespace ThreadType { enum Type : u8 { MAIN, WORKER }; }
+namespace ThreadType { enum Type : u8 { MAIN = task::Thread::MAIN, WORKER = task::Thread::ANY }; }
 
 namespace impl {
 inline thread_local ThreadType::Type thread_type;
@@ -388,25 +388,19 @@ private:
 
 		usize num_awoken = 0;
 
-		if constexpr (THREAD == task::Thread::ANY) {// Try wake-up named-thread only.
+		if constexpr (THREAD == task::Thread::ANY) {// Try wake-up named-thread then worker thread.
 			for (auto& sleeping_thread_queue : sleeping_threads_queues) {
 				while (try_wakeup(sleeping_thread_queue) && ++num_awoken < num_threads) {}
 			}
-		} else {// Try wake-up named-thread then worker thread.
+		} else {// Try wake-up named-thread only.
 			while (try_wakeup(sleeping_threads_queues[THREAD]) && ++num_awoken < num_threads) {}
-		#if 0
-			if (sleeping_threads_queues[THREAD].try_dequeue(thread_condition)) {
-				wake_up(thread_condition);
-				return true;
-			}
-		#endif
 		}
 
 		return num_awoken;
 	}
 
-	FORCEINLINE fn wakeup_all_threads() -> void {
-		while (try_wakeup_thread<task::Thread::ANY>()) {}
+	FORCEINLINE fn wakeup_all_threads() -> bool {
+		return try_wakeup_threads<task::Thread::ANY>(static_cast<usize>(UINT64_MAX)) > 0;
 	}
 
 	fn try_wakeup_thread(const task::Thread::Type thread) -> bool {
