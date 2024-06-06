@@ -70,6 +70,7 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 
 #include "core/src/public/ecs/system.hpp"
 #include "core/src/public/math.hpp"
+#include "core/src/public/ecs/component.hpp"
 
 enum class SomeGroup : u8 {
 	START, MIDDLE, END
@@ -79,9 +80,29 @@ enum class SomeOtherGroup : u8 {
 	START, END
 };
 
+struct FirstComp {
+	FirstComp() {
+		fmt::println("The constructor was called!");
+	};
+
+	f64 value = 10.0;
+};
+
+struct SecondComp {
+	f32 something = 0.f;
+};
+
+struct ThirdComp {
+	f32 something;
+	f32 something_else;
+};
+
 fn main(const i32 args_count, const char* args[]) -> i32 {
 	using namespace core;
 	using namespace core::ecs;
+
+	const StringView string = get_type_name<SomeGroup>();
+	fmt::println("{}", string);
 
 	return EXIT_SUCCESS;
 

@@ -5,6 +5,24 @@
 #include "math.hpp"
 #include "assert.hpp"
 
+template<typename T>
+consteval fn get_type_name() -> StringView {
+	const StringView name = __PRETTY_FUNCTION__;
+#if defined(__clang__) || defined(__GNUC__)
+    // Extract between "T = " and "]"
+    const auto start = name.find('=') + 2;
+    const auto end = name.rfind(']');
+    return name.substr(start, end - start);
+#elif defined(_MSC_VER)
+    // Extract between "type_name<" and ">(void)"
+    const auto start = name.find('<') + 1;
+    const auto end = name.rfind('>');
+    return name.substr(start, end - start);
+#else
+    return name;
+#endif
+}
+
 template<typename... Ts>
 class Variant : public std::variant<Ts...> {
 public:
@@ -66,8 +84,8 @@ public:
 template<usize BITS>
 using BitSet = std::bitset<BITS>;
 
-// @TODO: Make an inline allocator for this.
-template<typename Word = u32, typename Allocator = std::allocator<Word>>
+// @TODO: Make an inline allocator for this otherwise it will be super slow.
+template<std::unsigned_integral Word = u32, typename Allocator = std::allocator<Word>>
 class BitArray {
 public:
 	static constexpr usize NUM_BYTES_PER_WORD = sizeof(Word);
@@ -110,7 +128,7 @@ public:
 	[[nodiscard]]
 	fn operator[](const std::integral auto index) -> BitReference {
 		ASSERTF(index < num_bits, "Attempted to access index {} when there are {} bits allocated!", index, num_bits);
-		return BitReference{index % NUM_BITS_PER_WORD, array[index / NUM_BITS_PER_WORD]};
+		return BitReference{static_cast<Word>(1) << (index % NUM_BITS_PER_WORD), array[index / NUM_BITS_PER_WORD]};
 	}
 
 	[[nodiscard]]
@@ -157,8 +175,7 @@ public:
 		return copy &= other;
 	}
 
-	template<std::integral Int>
-	fn for_each_set_bit(Invokable<Int> auto&& func) -> void {
+	fn for_each_set_bit(Invokable<u32> auto&& func) -> void {
 		for (usize i = 0; i < array.size(); ++i) {
 			for (Word mask = array[i]; mask; mask &= mask - 1) {
 				std::invoke(func, math::count_trailing_zeros(mask) + i * NUM_BITS_PER_WORD);
@@ -177,7 +194,7 @@ public:
 	}
 
 	[[nodiscard]]
-	fn has_all_set_bits(const BitArray& other) const -> bool {
+	fn has_all_matching_set_bits(const BitArray& other) const -> bool {
 		const auto count = std::min(array.size(), other.array.size());
 		for (usize i = 0; i < count; ++i) {
 			if ((array[i] & other.array[i]) != array[i]) {
@@ -185,6 +202,17 @@ public:
 			}
 		}
 		return true;
+	}
+
+	[[nodiscard]]
+	fn has_any_matching_set_bits(const BitArray& other) const -> bool {
+		const auto count = std::min(array.size(), other.array.size());
+		for (usize i = 0; i < count; ++i) {
+			if (array[i] & other.array[i]) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	[[nodiscard]]
@@ -236,7 +264,7 @@ public:
 
 	// Inserts a bit at the given index. If the index is out of range the array will be resized with zeros to fit.
 	fn insert(const usize index, const bool value) -> void {
-		set_min_size_bits(index);
+		set_min_size_bits(index + 1);
 		(*this)[index] = value;
 	}
 
@@ -288,8 +316,46 @@ public:
 		return num_bits;
 	}
 
+	[[nodiscard]]
+	FORCEINLINE fn is_valid_index(const std::integral auto index) const -> bool {
+		return index < num_bits;
+	}
+
 	Array<Word, Allocator> array;
 
 private:
 	usize num_bits = 0;
+};
+
+// Subclass this to make an integer type that can't be coerced into other IntAlias types.
+template<std::integral T>
+struct IntAlias {
+	constexpr IntAlias() : value{0} {}
+	explicit IntAlias(NoInit) {}
+	constexpr explicit IntAlias(const std::integral auto in_value) : value{in_value} {}
+	constexpr IntAlias(const IntAlias&) = default;
+	constexpr IntAlias(IntAlias&&) noexcept = default;
+	constexpr fn operator=(const IntAlias&) -> IntAlias& = default;
+	constexpr fn operator=(IntAlias&&) noexcept -> IntAlias& = default;
+
+	[[nodiscard]]
+	FORCEINLINE constexpr fn operator<=>(const std::integral auto other) const { return value <=> other; }
+
+	template<std::integral Other>
+	[[nodiscard]]
+	FORCEINLINE constexpr fn operator<=>(const IntAlias<Other>& other) const { return value <=> other.value; }
+
+	template<typename Other>
+	requires std::is_arithmetic_v<T>
+	[[nodiscard]]
+	FORCEINLINE constexpr operator Other() const { return static_cast<Other>(value); }
+
+	[[nodiscard]] FORCEINLINE constexpr operator T&() { return value; }
+	[[nodiscard]] FORCEINLINE constexpr operator const T&() const { return value; }
+
+	FORCEINLINE constexpr fn set_value(const T new_value) -> void { value = new_value; }
+	[[nodiscard]] FORCEINLINE constexpr fn get_value() const -> T { return value; }
+
+private:
+	T value;
 };

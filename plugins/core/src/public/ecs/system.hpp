@@ -4,15 +4,15 @@
 
 
 struct GroupInfo {
-	const char* name;
-	Array<const char*> entry_names;
+	String name;
+	Array<String> entry_names;
 };
 
 template<Enum T>
 struct GroupTraits {
 	static fn get() -> GroupInfo {
 		return GroupInfo{
-			.name = "None"
+			.name = get_type_name<T>(),
 		};
 	};
 };
@@ -69,7 +69,7 @@ struct Ordering {
 	Array<Group> subsequent_groups;
 
 private:
-	EXPORT_API inline static constinit Array<GroupInfo> group_infos;
+	EXPORT_API inline static Array<GroupInfo> group_infos;
 };
 
 struct SystemInfo {
@@ -79,6 +79,7 @@ struct SystemInfo {
 };
 
 struct SystemBase {
+	SystemBase() = delete;
 	virtual ~SystemBase() = default;
 	virtual fn execute(SystemContext& context) -> void = 0;
 };

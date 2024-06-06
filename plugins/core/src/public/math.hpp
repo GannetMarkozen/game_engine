@@ -86,6 +86,11 @@ FORCEINLINE constexpr fn count_leading_zeros(const std::integral auto value) -> 
 }
 
 [[nodiscard]]
+FORCEINLINE constexpr fn count_set_bits(const std::integral auto value) -> u32 {
+	return std::popcount(make_unsigned(value));
+}
+
+[[nodiscard]]
 FORCEINLINE constexpr fn ceil_log_two(const std::integral auto value) -> u32 {
 	static constexpr auto NUM_BITS = sizeof(value) * 8;
 	return NUM_BITS - count_leading_zeros(value > 0 ? value - static_cast<decltype(value)>(1) : static_cast<decltype(value)>(1));

@@ -51,8 +51,14 @@ static_assert(false, "EXPORT_API already defined!");
 
 #define ASSUME(...) __builtin_assume(__VA_ARGS__)
 #define UNREACHABLE __builtin_unreachable()
+
+#ifndef FORCEINLINE
 #define FORCEINLINE __attribute__((always_inline)) inline
+#endif
+
+#ifndef NOINLINE
 #define NOINLINE __attribute__((noinline))
+#endif
 
 #elif COMPILER_MSVC
 
@@ -140,6 +146,7 @@ template<typename T1, typename T2>
 using Pair = std::pair<T1, T2>;
 
 using String = std::string;
+using StringView = std::string_view;
 
 template<typename... Ts>
 using Tuple = std::tuple<Ts...>;
