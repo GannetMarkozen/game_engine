@@ -12,9 +12,9 @@ project(core VERSION 1.0)
 # Gather all cpp files within the src/private directory.
 file(GLOB_RECURSE SOURCES src/private/*.cpp)
 
-add_library(core SHARED ${SOURCES})
+add_library(core STATIC ${SOURCES})
 
-target_include_directories(core PRIVATE src/public)
+target_include_directories(core PUBLIC src/public)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries." ON)
 
@@ -37,17 +37,3 @@ target_link_libraries(core
 	PUBLIC fmt::fmt
 	PUBLIC concurrentqueue
 )
-
-if (CMAKE_BUILD_TYPE STREQUAL "Debug")
-	add_compile_definitions(
-		DEBUG_BUILD=1
-		RELEASE_BUILD=0
-	)
-elseif (CMAKE_BUILD_TYPE STREQUAL "Release")
-	add_compile_definitions(
-		DEBUG_BUILD=0
-		RELEASE_BUILD=1
-	)
-else()
-	message(FATAL_ERROR "Unknown build configuration")
-endif()

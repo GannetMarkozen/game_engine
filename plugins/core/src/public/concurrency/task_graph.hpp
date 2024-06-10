@@ -179,30 +179,6 @@ public:
 		return enqueue([func = FORWARD_AUTO(func)](const SharedPtr<Task>&) { func(); }, priority, thread, thread_priority, prerequisites, wake_up_thread);
 	}
 
-	fn wait_for_tasks_to_complete(const Span<const SharedPtr<Task>>& tasks) -> bool {
-		// Early-return if all tasks have already finished.
-		if (std::find_if(tasks.begin(), tasks.end(), [](const auto& task) { return !task->has_completed(); }) == tasks.end()) [[likely]] {
-			return false;
-		}
-
-		Mutex mutex;
-		std::condition_variable_any condition;
-		volatile bool tasks_completed = false;
-
-		UniqueLock condition_lock{mutex};
-
-		enqueue([&] {
-			ScopeLock lock{mutex};
-
-			tasks_completed = true;
-			condition.notify_one();
-		}, task::Priority::HIGH, task::Thread::ANY, task::ThreadPriority::FOREGROUND, tasks);
-
-		condition.wait(condition_lock, [&] { return tasks_completed; });
-
-		return true;
-	}
-
 	fn busy_wait_for_tasks_to_complete(const Span<const SharedPtr<Task>>& tasks) -> void {
 		volatile bool tasks_completed = false;
 
@@ -276,11 +252,7 @@ private:
 				thread_condition->is_asleep = true;
 				sleeping_threads_queues[THREAD].enqueue(thread_condition);
 
-				// Not guarding for spurious wakeups since it doesn't matter in this case.
-				thread_condition->condition.wait(lock);
-
-				// No longer asleep.
-				thread_condition->is_asleep = false;
+				thread_condition->condition.wait(lock, [&] { return !thread_condition->is_asleep; });
 			}
 
 			task->func(task);
@@ -333,29 +305,36 @@ private:
 
 	template<task::Thread::Type THREAD>
 	fn try_wakeup_thread() -> bool {
-		const auto wake_up = [&](const SharedPtr<ThreadCondition>& thread_condition) {
+		const auto try_wakeup = [&](const SharedPtr<ThreadCondition>& thread_condition) -> bool {
 			// There can only be contention over this mutex if a thread is about to go to sleep
 			// and we try to wake up that thread before it's asleep so it's a tiny window.
 			ScopeLock lock{thread_condition->condition_mutex};
 
-			ASSERT(thread_condition->is_asleep);
+			// This can return false if the thread is still awake. This will only really happen if you wake up
+			// a specific thread not using the queue so we need to try and dequeue again.
+			if (!thread_condition->is_asleep) [[unlikely]] {
+				return false;
+			}
+
+			// Must set this flag to allow the thread to be woken up.
+			thread_condition->is_asleep = false;
 
 			// Only one thread will wait on this.
 			thread_condition->condition.notify_one();
+
+			return true;
 		};
 
 		SharedPtr<ThreadCondition> thread_condition = nullptr;
 
 		if constexpr (THREAD == task::Thread::ANY) {// Try wake-up named-thread only.
 			for (auto& sleeping_thread_queue : sleeping_threads_queues) {
-				if (sleeping_thread_queue.try_dequeue(thread_condition)) {
-					wake_up(thread_condition);
+				if (sleeping_thread_queue.try_dequeue(thread_condition) && try_wakeup(thread_condition)) {
 					return true;
 				}
 			}
 		} else {// Try wake-up named-thread then worker thread.
-			if (sleeping_threads_queues[THREAD].try_dequeue(thread_condition)) {
-				wake_up(thread_condition);
+			if (sleeping_threads_queues[THREAD].try_dequeue(thread_condition) && try_wakeup(thread_condition)) {
 				return true;
 			}
 		}
@@ -370,20 +349,29 @@ private:
 		const auto try_wakeup = [&](ConcurrentQueue<SharedPtr<ThreadCondition>>& queue) -> bool {
 			SharedPtr<ThreadCondition> thread_condition = nullptr;
 
-			if (!queue.try_dequeue(thread_condition)) {
-				return false;
+			while (true) {
+				if (!queue.try_dequeue(thread_condition)) {
+					return false;
+				}
+
+				// There can only be contention over this mutex if a thread is about to go to sleep
+				// and we try to wake up that thread before it's asleep so it's a tiny window.
+				ScopeLock lock{thread_condition->condition_mutex};
+
+				// Try again. This thread is already awake. This can happen if a specific thread was woken up so it
+				// was not dequeued.
+				if (!thread_condition->is_asleep) [[unlikely]] {
+					continue;
+				}
+
+				// Must set this flag to allow the thread to be woken up.
+				thread_condition->is_asleep = false;
+
+				// Only one thread will wait on this.
+				thread_condition->condition.notify_one();
+
+				return true;
 			}
-
-			// There can only be contention over this mutex if a thread is about to go to sleep
-			// and we try to wake up that thread before it's asleep so it's a tiny window.
-			ScopeLock lock{thread_condition->condition_mutex};
-
-			ASSERT(thread_condition->is_asleep);
-
-			// Only one thread will wait on this.
-			thread_condition->condition.notify_one();
-
-			return true;
 		};
 
 		usize num_awoken = 0;
@@ -428,6 +416,9 @@ private:
 		if (!thread_condition->is_asleep) {
 			return false;
 		}
+
+		// Must set this flag otherwise the thread won't wake up.
+		thread_condition->is_asleep = false;
 
 		// Wake-up.
 		thread_condition->condition.notify_one();

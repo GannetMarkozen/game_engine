@@ -120,8 +120,10 @@ constexpr usize CACHE_LINE_SIZE = 64;
 
 enum NoInit { NO_INIT };
 
+namespace concepts {
 template<typename T>
 concept Enum = std::is_enum_v<T>;
+}
 
 template<typename T, typename... Args>
 concept Invokable = requires(T&& t, Args&&... args) {
@@ -151,7 +153,7 @@ using StringView = std::string_view;
 template<typename... Ts>
 using Tuple = std::tuple<Ts...>;
 
-template<typename Key, typename Value, typename HashOp = std::hash<Key>, typename EqualOp = std::equal_to<Key>, typename Allocator = std::allocator<Pair<Key, Value>>>
+template<typename Key, typename Value, typename HashOp = std::hash<Key>, typename EqualOp = std::equal_to<Key>, typename Allocator = std::allocator<Pair<const Key, Value>>>
 using Map = std::unordered_map<Key, Value, HashOp, EqualOp, Allocator>;
 
 template<typename T, typename HashOp = std::hash<T>, typename EqualOp = std::equal_to<T>, typename Allocator = std::allocator<T>>

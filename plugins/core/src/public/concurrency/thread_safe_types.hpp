@@ -4,7 +4,8 @@
 
 #include "concurrentqueue.h"
 
-#include "../defines.hpp"
+#include "defines.hpp"
+#include "threading.hpp"
 
 template<typename T>
 concept MutexConcept = requires(T t) {
@@ -278,6 +279,81 @@ struct RWLocked {
 private:
 	T value;
 	mutable SharedMutexType mutex;
+};
+
+#if 0
+// @NOTE: This assumes threads aren't being constantly created and destroyed.
+// Creates an instance of T for every thread so there is no contention.
+template<typename T>
+struct ThreadLocal {
+private:
+	struct alignas(CACHE_LINE_SIZE) CacheLinePadded {
+		T value;
+	};
+
+public:
+	ThreadLocal() {
+		values.resize(core::get_num_threads());
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr fn get() -> T& {
+		return values[core::get_thread_index()].value;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr fn get() const -> const T& {
+		return values[core::get_thread_index()].value;
+	}
+
+	Array<CacheLinePadded> values;
+};
+#endif
+
+// Creates an instance of T for each thread so access is inherently thread-safe without contention.
+template<typename T, SharedMutexConcept SharedMutexType = SharedMutex>
+struct ThreadLocal {
+private:
+	struct alignas(CACHE_LINE_SIZE) CacheLinePadded {
+		T value;
+	};
+public:
+	[[nodiscard]]
+	FORCEINLINE fn get() -> T& {
+		T* value = thread_map.read([&](const auto& map) {
+			const auto it = map.find(std::this_thread::get_id());
+			return it != map.end() ? &(*it)->value : nullptr;
+		});
+
+		if (!value) [[unlikely]] {
+			value = thread_map.write([&](auto& map) {
+				//return map[std::this_thread::get_id()].value.get();
+				return map.insert(std::this_thread::get_id(), std::make_unique<CacheLinePadded>()).get();
+			});
+			ASSERT(value != nullptr);
+		}
+
+		return *value;
+	}
+
+	[[nodiscard]]
+	FORCEINLINE fn get() const -> const T& {
+		return const_cast<ThreadLocal*>(this)->get();
+	}
+
+	// Exclusive blocking / write-access to each thread value.
+	FORCEINLINE fn for_each_blocking(Invokable<T&> auto&& func) -> void {
+		thread_map.write([&](auto& map) {
+			for (auto& pair : map) {
+				std::invoke(func, pair.second);
+			}
+		});
+	}
+
+	[[nodiscard]] FORCEINLINE fn operator*() -> T& { return get(); }
+	[[nodiscard]] FORCEINLINE fn operator*() const -> const T& { return get(); }
+	[[nodiscard]] FORCEINLINE fn operator->() -> T* { return &get(); }
+	[[nodiscard]] FORCEINLINE fn operator->() const -> const T* { return &get(); }
+
+	mutable RWLocked<Map<std::thread::id, UniquePtr<CacheLinePadded>>, SharedMutexType> thread_map;
 };
 
 #if 01

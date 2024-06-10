@@ -1,8 +1,9 @@
 #pragma once
 
-#include "../defines.hpp"
+#include "defines.hpp"
 #include "types.hpp"
 #include "component.hpp"
+#include "world.hpp"
 
 namespace core::ecs {
 
@@ -52,14 +53,26 @@ struct Requirements {
 	}
 
 	[[nodiscard]]
-	FORCEINLINE fn operator&(const Requirements& other) -> Requirements {
-		auto copy = *this;
+	FORCEINLINE fn operator&(const Requirements& other) const -> Requirements {
+		Requirements copy = *this;
 		return copy &= other;
 	}
 
 	[[nodiscard]]
-	FORCEINLINE fn operator|(const Requirements& other) -> Requirements {
-		auto copy = *this;
+	FORCEINLINE fn operator|(const Requirements& other) const -> Requirements {
+		Requirements copy = *this;
+		return copy |= other;
+	}
+
+	[[nodiscard]]
+	FORCEINLINE fn operator&(const Requirements& other) && -> Requirements {
+		Requirements copy = std::move(*this);
+		return copy &= other;
+	}
+
+	[[nodiscard]]
+	FORCEINLINE fn operator|(const Requirements& other) && -> Requirements {
+		Requirements copy = std::move(*this);
 		return copy |= other;
 	}
 
@@ -74,7 +87,31 @@ struct Requirements {
 	ComponentMask exclude_mask;
 };
 
-struct Query {
-	Requirements requirements;
+struct Query : public Requirements {
+	using Requirements::Requirements;
+
+	// @TODO: Cache matched archetypes (otherwise this will probably be prohibitively slow).
+	fn for_each_matching_archetype(const World& world, Invokable<Archetype&> auto&& func) const -> void {
+		world.archetypes.read([&](const auto& archetypes) {
+			for (const auto& archetype : archetypes) {
+				archetype->write([&](Archetype& archetype) {
+					const auto& mask = archetype.component_mask;
+					if (read_mask.has_all_matching_set_bits(mask) && write_mask.has_all_matching_set_bits(mask) && include_mask.has_all_matching_set_bits(mask) && !exclude_mask.has_any_matching_set_bits(mask)) {
+						std::invoke(func, archetype);
+					}
+				});
+			}
+		});
+	}
+
+	template<typename... Components>
+	requires (sizeof...(Components) > 0 && (!std::is_empty_v<std::decay_t<Components>> && ...))
+	fn for_each_view(const World& world, Invokable<u32, Components*...> auto&& func) const -> void {
+		ASSERT(((read_mask.has<std::decay_t<Components>>() || write_mask.has<std::decay_t<Components>>()) && ...));
+
+		for_each_matching_archetype(world, [&](Archetype& archetype) {
+			archetype.for_each_view<Components...>(FORWARD_AUTO(func));
+		});
+	}
 };
 }

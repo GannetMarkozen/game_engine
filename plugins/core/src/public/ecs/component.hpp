@@ -2,11 +2,8 @@
 
 #include "../defines.hpp"
 #include "../types.hpp"
+#include "ids.hpp"
 #include <type_traits>
-
-struct ComponentId : public IntAlias<u16> {
-	using IntAlias<u16>::IntAlias;
-};
 
 template<typename T>
 struct ComponentTraitsBase {
@@ -16,6 +13,8 @@ struct ComponentTraitsBase {
 
 	static fn construct(void* dst, const usize count) -> void {
 		static_assert(std::is_default_constructible_v<T>, "Component type must be default constructible or you must override ComponentTraits::construct.");
+		ASSERT(math::is_aligned((uptr)dst, alignof(T)));
+
 		for (usize i = 0; i < count; ++i) {
 			new(&static_cast<T*>(dst)[i]) T{};
 		}
@@ -26,7 +25,7 @@ struct ComponentTraitsBase {
 			memcpy(dst, src, sizeof(T) * count);
 		} else {
 			for (usize i = 0; i < count; ++i) {
-				new(&static_cast<T*>(src)[i]) T{static_cast<const T*>(src)[i]};
+				new(&static_cast<T*>(dst)[i]) T{static_cast<const T*>(src)[i]};
 			}
 		}
 	}
@@ -38,7 +37,7 @@ struct ComponentTraitsBase {
 			copy_construct(dst, src, count);
 		} else {
 			for (usize i = 0; i < count; ++i) {
-				new(&static_cast<T*>(dst)) T{std::move(static_cast<T*>(src)[i])};
+				new(&static_cast<T*>(dst)[i]) T{std::move(static_cast<T*>(src)[i])};
 			}
 		}
 	}
@@ -65,7 +64,7 @@ struct ComponentTraitsBase {
 		}
 	};
 
-	static fn destructor(void* dst, const usize count) -> void {
+	static fn destruct(void* dst, const usize count) -> void {
 		if constexpr (!std::is_trivially_destructible_v<T>) {
 			for (usize i = 0; i < count; ++i) {
 				static_cast<T*>(dst)[i].~T();
@@ -79,20 +78,20 @@ struct ComponentTraits : public ComponentTraitsBase<T> {};
 
 namespace core::ecs {
 	struct ComponentRecord {
-		String name;
+		StringView name;
 		void(*construct)(void*, usize);
 		void(*copy_construct)(void*, const void*, usize);
 		void(*move_construct)(void*, void*, usize);
 		void(*copy_assign)(void*, const void*, usize);
 		void(*move_assign)(void*, void*, usize);
-		void(*destructor)(void*, usize);
+		void(*destruct)(void*, usize);
 		usize size;
 		usize alignment;
 		u64 is_tag: 1;
 	};
 
 namespace impl {
-EXPORT_API inline Array<ComponentRecord> component_records;
+inline Array<ComponentRecord> component_records;
 }
 
 template<typename T>
@@ -110,7 +109,7 @@ inline fn get_component_id() -> ComponentId {
 			.move_construct = &Traits::move_construct,
 			.copy_assign = &Traits::copy_assign,
 			.move_assign = &Traits::move_assign,
-			.destructor = &Traits::destructor,
+			.destruct = &Traits::destruct,
 			.size = sizeof(T),
 			.alignment = alignof(T),
 			.is_tag = std::is_empty_v<T>,
@@ -124,7 +123,8 @@ inline fn get_component_id() -> ComponentId {
 
 [[nodiscard]]
 FORCEINLINE fn get_component_info(const ComponentId component) -> const ComponentRecord& {
-	return impl::component_records[component];
+	ASSERTF(component.get_value() < impl::component_records.size(), "Attempted to access index {} from size {}!", component.get_value(), impl::component_records.size());
+	return impl::component_records[component.get_value()];
 }
 
 // May change at runtime.
@@ -135,6 +135,20 @@ inline fn get_component_count() -> u32 {
 
 struct ComponentMask : public BitArray<> {
 	using BitArray<>::BitArray;
+
+	// Creates a singleton mask of the desired composition.
+	template<typename... Ts>
+	requires (sizeof...(Ts) > 0)
+	[[nodiscard]]
+	FORCEINLINE static fn make() -> const ComponentMask& {
+		static const ComponentMask SINGLETON_MASK = [&] {
+			ComponentMask mask;
+			mask.add<Ts...>();
+			return mask;
+		}();
+
+		return SINGLETON_MASK;
+	}
 
 	template<typename... Ts>
 	requires (sizeof...(Ts) > 0)
@@ -155,6 +169,16 @@ struct ComponentMask : public BitArray<> {
 	FORCEINLINE fn has() const -> bool {
 		const auto id = get_component_id<T>().get_value();
 		return is_valid_index(id) && (*this)[id];
+	}
+
+	FORCEINLINE fn for_each_component(Invokable<ComponentId> auto&& func) const -> void {
+		for_each_set_bit([&](const u32 i) {
+			std::invoke(func, ComponentId{static_cast<u16>(i)});
+		});
+	}
+
+	FORCEINLINE fn count_components() const -> usize {
+		return count_set_bits();
 	}
 };
 }

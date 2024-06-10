@@ -117,4 +117,32 @@ FORCEINLINE constexpr fn round_down_to_power_of_two(const std::integral auto val
 FORCEINLINE constexpr fn num_bits_required(const std::integral auto value) -> u32 {
 	return std::bit_width(make_unsigned(value));
 }
+
+[[nodiscard]]
+FORCEINLINE constexpr fn align(const std::integral auto value, const std::integral auto alignment) {
+	return (value + alignment - 1) & ~(alignment - 1);
+}
+
+[[nodiscard]]
+FORCEINLINE constexpr fn is_aligned(const std::integral auto value, const std::integral auto alignment) -> bool {
+	return align(value, alignment) == value;
+}
+
+[[nodiscard]]
+FORCEINLINE constexpr fn hash_combine(u32 a, u32 b) -> u32 {
+	u32 c = 0x9e3779b9;
+	a += c;
+
+	a -= c; a -= b; a ^= (b>>13);
+	c -= b; c -= a; c ^= (a<<8);
+	b -= a; b -= c; b ^= (c>>13);
+	a -= c; a -= b; a ^= (b>>12);
+	c -= b; c -= a; c ^= (a<<16);
+	b -= a; b -= c; b ^= (c>>5);
+	a -= c; a -= b; a ^= (b>>3);
+	c -= b; c -= a; c ^= (a<<10);
+	b -= a; b -= c; b ^= (c>>15);
+
+	return b;
+}
 }

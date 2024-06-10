@@ -39,6 +39,20 @@ add_compile_definitions(
     FOONATHAN_HAS_EXCEPTION_SUPPORT=0 # Disable excepetions for memory allocators.
 )
 
+if (CMAKE_BUILD_TYPE STREQUAL "Debug")
+	add_compile_definitions(
+		DEBUG_BUILD=1
+		RELEASE_BUILD=0
+	)
+elseif (CMAKE_BUILD_TYPE STREQUAL "Release")
+	add_compile_definitions(
+		DEBUG_BUILD=0
+		RELEASE_BUILD=1
+	)
+else()
+	message(FATAL_ERROR "Unknown build configuration")
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(
