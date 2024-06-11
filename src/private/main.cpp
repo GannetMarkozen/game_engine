@@ -36,11 +36,19 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 }
 
 enum class SomeGroup : u8 {
-	START, MIDDLE, END
+	START, MIDDLE, END, COUNT
 };
 
 enum class SomeOtherGroup : u8 {
-	START, END
+	START, END, COUNT
+};
+
+enum class GameFrameGroup : u8 {
+	FRAME_END, COUNT
+};
+
+enum class RenderFrameGroup : u8 {
+	FRAME_END, COUNT
 };
 
 struct Name {
@@ -71,6 +79,50 @@ struct AttachParent {
 	Transform relative_transform;
 };
 
+#include "core/src/public/ecs/query.hpp"
+#include "core/src/public/ecs/world.hpp"
+
+struct SomeSystem final : public core::ecs::SystemBase {
+	explicit SomeSystem(core::ecs::Requirements& out_requirements) {
+		query.reads<Name>();
+
+		out_requirements |= query;
+	}
+
+	virtual fn execute(core::ecs::World& world) -> void override {
+		query.for_each_matching_archetype(world, [&](core::ecs::Archetype& archetype) {
+			archetype.for_each_view<const Name>([&](const u32 count, const Name* names) {
+				for (u32 i = 0; i < count; ++i) {
+					fmt::println("Name[{}] == {}", i, names[i].value);
+				}
+			});
+		});
+	}
+
+	core::ecs::Query query;
+};
+
+struct SomeOtherSystem final : public core::ecs::SystemBase {
+	explicit SomeOtherSystem(core::ecs::Requirements& out_requirements) {
+		out_requirements.writes<Name>();
+		out_requirements.writes<AttachParent>();
+	}
+
+	virtual fn execute(core::ecs::World& world) -> void override {
+		fmt::println("Executed");
+	}
+};
+
+struct OnFrameEndSystem final : public core::ecs::SystemBase {
+	explicit OnFrameEndSystem(core::ecs::Requirements& out_requirements) {
+		out_requirements.writes<Name>();
+	}
+
+	virtual fn execute(core::ecs::World& world) -> void override {
+		fmt::println("The frame has ended");
+	}
+};
+
 #include <flecs.h>
 #include "core/src/public/ecs/app.hpp"
 #include "core/src/public/ecs/query.hpp"
@@ -78,6 +130,26 @@ struct AttachParent {
 fn main(const i32 args_count, const char* args[]) -> i32 {
 	using namespace core;
 	using namespace core::ecs;
+
+	App{}
+		.add_group<GameFrameGroup>()
+		.add_group<SomeGroup>(GroupOrdering{
+			.subsequents = { get_group(GameFrameGroup::FRAME_END) },
+		})
+		.add_group<SomeOtherGroup>(GroupOrdering{
+			.prerequisites = { get_group(SomeGroup::END) },
+			.subsequents = { get_group(GameFrameGroup::FRAME_END) },
+		})
+		.add_system<SomeSystem>(SystemInfo{
+			.group = get_group(SomeGroup::START),
+		})
+		.add_system<SomeOtherSystem>(SystemInfo{
+			.group = get_group(SomeOtherGroup::START),
+		})
+		.add_system<OnFrameEndSystem>(SystemInfo{
+			.group = get_group(GameFrameGroup::FRAME_END),
+		})
+		.run();
 
 #if 01
 #if 0

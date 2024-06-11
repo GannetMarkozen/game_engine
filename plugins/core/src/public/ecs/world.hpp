@@ -7,11 +7,15 @@
 #include "component.hpp"
 #include "archetype.hpp"
 
+namespace core {
+struct Task;
+}
 
 namespace core::ecs {
 struct ComponentMask;
 struct Archetype;
 struct App;
+struct SystemBase;
 
 struct FreeEntityRecord {
 	// No value if this is the last free entity in the list.
@@ -148,6 +152,13 @@ private:
 struct World {
 	NON_COPYABLE(World);
 
+	struct System {
+		SharedPtr<Task> task;
+		UniquePtr<SystemBase> system;
+		Array<u32> subsequents;// System indices that are enqueued once this system has completed executing.
+		Array<u32> contentious_systems;// System indices not allowed to run in-parallel with this one.
+	};
+
 	// Constructs systems and determines system ordering.
 	explicit World(const App& app);
 
@@ -241,6 +252,8 @@ struct World {
 
 	// Commands with world-access that will be run at sync-points.
 	ThreadLocal<Array<Fn<void(World&)>>> deferred_commands;
+
+	Array<System> systems;
 
 	// Whether or not systems are currently active.
 	bool is_processing = false;

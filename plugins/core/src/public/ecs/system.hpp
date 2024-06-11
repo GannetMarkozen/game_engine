@@ -24,6 +24,13 @@ template<concepts::Enum T>
 struct GroupTraits : public GroupTraitsBase<T> {};
 
 namespace core::ecs {
+namespace concepts {
+template<typename T>
+concept Group = requires {
+	{ T::COUNT } -> std::same_as<T>;
+} && std::is_enum_v<T> && std::is_same_v<__underlying_type(T), u8>;
+}
+
 struct World;
 
 struct SystemGroupId : public IntAlias<u16> {
@@ -42,7 +49,7 @@ namespace impl {
 EXPORT_API inline Array<SystemGroupInfo> group_infos;
 }
 
-template<concepts::Enum T>
+template<concepts::Group T>
 inline fn get_group_id() -> SystemGroupId {
 	static const SystemGroupId GROUP = [] {
 		const usize old_size = impl::group_infos.size();
@@ -60,7 +67,7 @@ inline fn get_group_id() -> SystemGroupId {
 	return GROUP;
 }
 
-FORCEINLINE fn get_group(const concepts::Enum auto group) -> SystemGroup {
+FORCEINLINE fn get_group(const concepts::Group auto group) -> SystemGroup {
 	return SystemGroup{
 		.group = get_group_id<std::decay_t<decltype(group)>>(),
 		.value = static_cast<u8>(group),
@@ -72,27 +79,15 @@ FORCEINLINE fn get_group_info(const SystemGroupId id) -> const SystemGroupInfo& 
 }
 
 struct GroupOrdering {
-	[[nodiscard]]
-	static fn before(const concepts::Enum auto... groups) -> GroupOrdering requires (sizeof...(groups) > 0) {
-		return GroupOrdering{
-			.prerequisites = { get_group(groups)... },
-		};
-	}
-
-	[[nodiscard]]
-	static fn after(const concepts::Enum auto... groups) -> GroupOrdering requires (sizeof...(groups) > 0) {
-		return GroupOrdering{
-			.subsequents = { get_group(groups)... },
-		};
-	}
-
-	fn before(const concepts::Enum auto... groups) -> GroupOrdering& requires (sizeof...(groups) > 0) {
-		prerequisites.append_range({ get_group(groups)... });
+	fn before(const concepts::Group auto... groups) -> GroupOrdering& requires (sizeof...(groups) > 0) {
+		auto groups_array = { get_group(groups)... };
+		prerequisites.append_range(groups_array);
 		return *this;
 	}
 
-	fn after(const concepts::Enum auto... groups) -> GroupOrdering& requires (sizeof...(groups) > 0) {
-		subsequents.append_range({ get_group(groups)... });
+	fn after(const concepts::Group auto... groups) -> GroupOrdering& requires (sizeof...(groups) > 0) {
+		auto groups_array = { get_group(groups)... };
+		subsequents.append_range(groups_array);
 		return *this;
 	}
 
@@ -110,8 +105,7 @@ struct SystemInfo {
 struct alignas(CACHE_LINE_SIZE) SystemBase {
 	NON_COPYABLE(SystemBase);
 
-	SystemBase() = delete;
-	explicit SystemBase(Requirements& out_requirements);
+	SystemBase() = default;
 
 	virtual ~SystemBase() = default;
 	virtual fn execute(World& world) -> void = 0;

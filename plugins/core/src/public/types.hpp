@@ -562,6 +562,9 @@ struct FnRef;
 // References a function object. Does not do any allocations unlike Fn.
 template<typename Return, typename... Args>
 struct FnRef<Return(Args...)> {
+	constexpr FnRef()
+		: data{nullptr}, func{nullptr} {}
+
 	template<InvokableReturns<Return, Args...> T>
 	FORCEINLINE constexpr FnRef(T&& in_func [[clang::lifetimebound]])
 		:
@@ -574,7 +577,12 @@ struct FnRef<Return(Args...)> {
 			}
 		}} {}
 
+	FORCEINLINE constexpr fn operator=(InvokableReturns<Return, Args...> auto&& in_func [[clang::lifetimebound]]) -> FnRef& {
+		return *new(this) FnRef{in_func};
+	}
+
 	FORCEINLINE constexpr fn operator()(Args... args) const -> Return {
+		ASSERTF(func, "Attempted to invoke FnRef before it's been assigned to any function!");
 		if constexpr (std::is_same_v<Return, void>) {
 			func(data, std::forward<Args>(args)...);
 		} else {
