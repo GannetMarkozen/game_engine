@@ -10,7 +10,7 @@ World::World(const App& app) {
 
 	struct GroupInfo {
 		Set<SystemGroup> subsequents;
-		Array<i32> systems;// Indexes into App::systems.
+		Array<u32> systems;// Indexes into App::systems.
 	};
 
 	Map<Optional<SystemGroup>, GroupInfo> group_info_map;
@@ -18,7 +18,7 @@ World::World(const App& app) {
 	// Fill-out group_info_map.
 	for (const auto& ordering : app.group_ordering_info) {
 		const auto group_num_entries = get_group_info(ordering.group).num_entries;
-		for (i32 i = 0; i < group_num_entries; ++i) {
+		for (u32 i = 0; i < group_num_entries; ++i) {
 			const SystemGroup group{
 				.group = ordering.group,
 				.value = static_cast<u8>(i),
@@ -133,7 +133,7 @@ World::World(const App& app) {
 
 	// @TMP
 	for (const auto& [group, info] : group_info_map) {
-		if (!group) {
+		if (!group || info.systems.empty()) {
 			continue;
 		}
 		fmt::println("{}[{}]({}) has subsequents [{}]", get_group_info(group->group).name, info.systems.empty() ? "UNUSED" : "used", group->value,
@@ -152,14 +152,11 @@ World::World(const App& app) {
 	Array<Requirements> system_requirements;
 	system_requirements.reserve(app.systems.size());
 
-	Map<Optional<SystemGroup>, Array<u32>> group_to_system_indices_map;
-
 	// Create systems and map groups to system indices.
 	for (const auto& system_create_info : app.systems) {
 		Requirements requirements = system_create_info.info.requirements;
 
 		const auto index = systems.size();
-		group_to_system_indices_map[system_create_info.info.group].push_back(index);
 
 		systems.push_back(System{
 			.system = system_create_info.factory(requirements),
@@ -169,11 +166,10 @@ World::World(const App& app) {
 	}
 
 	// Set subsequents.
-	for (const auto& [group, system_indices] : group_to_system_indices_map) {
-		const auto& info = group_info_map[group];
-		for (const auto system_index : system_indices) {
+	for (const auto& [group, info] : group_info_map) {
+		for (const auto system_index : info.systems) {
 			for (const auto subsequent_group : info.subsequents) {
-				systems[system_index].subsequents.append_range(group_to_system_indices_map[subsequent_group]);
+				systems[system_index].subsequents.append_range(group_info_map[subsequent_group].systems);
 			}
 		}
 	}
@@ -201,11 +197,13 @@ World::World(const App& app) {
 
 			// Check to see if the systems can run concurrently with each other. If not check to see if the existing scheduling will make it so that the 2 systems will never run at the same time anyways. Else assign as a contentious system.
 			// @TODO: This could be optimized to not be quite O log(n) complexity instead of O(n)^2 (since we compare the same 2 systems against each other twice in this double for-loop).
+			// @NOTE: Not even sure if this should be a thing at all. Having contentious systems with no explicit execution-order will lead to non-deterministic behaviour. Technically optimal but not sure for what case.
 			if (!system_requirements[system_index].can_execute_concurrently_with(system_requirements[other_system_index]) &&
 				!recursive_is_subsequent_of(recursive_is_subsequent_of, system_index, other_system_index) &&
 				!recursive_is_subsequent_of(recursive_is_subsequent_of, other_system_index, system_index)) {
 				systems[system_index].contentious_systems.push_back(other_system_index);
-				fmt::println("System {} and {} are contentious!", app.systems[system_index].info.name, app.systems[other_system_index].info.name);
+
+				WARN("System {} and {} are contentious with no explicit ordering!", app.systems[system_index].info.name, app.systems[other_system_index].info.name);
 			}
 		}
 	}

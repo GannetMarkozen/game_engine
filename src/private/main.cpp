@@ -127,17 +127,46 @@ struct OnFrameEndSystem final : public core::ecs::SystemBase {
 #include "core/src/public/ecs/app.hpp"
 #include "core/src/public/ecs/query.hpp"
 
+struct SomePlugin {
+	fn init(core::ecs::App& app) -> void {
+		using namespace core::ecs;
+
+		app
+			.add_group<GameFrameGroup>()
+			.add_group<SomeGroup>(GroupOrdering{
+				.subsequents = { get_group(GameFrameGroup::FRAME_END) },
+			})
+			.add_group<SomeOtherGroup>(GroupOrdering{
+				.subsequents = { get_group(SomeGroup::START), get_group(GameFrameGroup::FRAME_END) },
+			})
+			.add_system<SomeSystem>(SystemInfo{
+				.group = get_group(SomeGroup::START),
+			})
+			.add_system<SomeOtherSystem>(SystemInfo{
+				.group = get_group(SomeOtherGroup::START),
+			})
+			.add_system<OnFrameEndSystem>(SystemInfo{
+				.group = get_group(GameFrameGroup::FRAME_END),
+			});
+	}
+};
+
 fn main(const i32 args_count, const char* args[]) -> i32 {
 	using namespace core;
 	using namespace core::ecs;
 
+	App{}
+		.add_plugin(SomePlugin{})
+		.run();
+
+#if 0
 	App{}
 		.add_group<GameFrameGroup>()
 		.add_group<SomeGroup>(GroupOrdering{
 			.subsequents = { get_group(GameFrameGroup::FRAME_END) },
 		})
 		.add_group<SomeOtherGroup>(GroupOrdering{
-			.prerequisites = { get_group(SomeGroup::END) },
+			//.prerequisites = { get_group(SomeGroup::END) },
 			.subsequents = { get_group(GameFrameGroup::FRAME_END) },
 		})
 		.add_system<SomeSystem>(SystemInfo{
@@ -150,6 +179,7 @@ fn main(const i32 args_count, const char* args[]) -> i32 {
 			.group = get_group(GameFrameGroup::FRAME_END),
 		})
 		.run();
+#endif
 
 #if 01
 #if 0

@@ -33,11 +33,16 @@
 
 #define ASSERT_UNREACHABLE_DEFAULT default: ASSERT_UNREACHABLE
 
+#define WARN(format, ...) \
+	{ fmt::print(fmt::fg(fmt::color::yellow), "WARNING[{}: {}: {}]: " format "\n", __FILE_NAME__, __PRETTY_FUNCTION__, __LINE__, ##__VA_ARGS__); }
+
 #else
 
 #define ASSERT(...)
 #define ASSERTF(...)
 #define ASSERT_UNREACHABLE UNREACHABLE;
 #define ASSERT_UNREACHABLE_DEFAULT default: { UNREACHABLE; }
+
+#define WARN(...)
 
 #endif
