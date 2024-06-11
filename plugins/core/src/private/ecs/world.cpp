@@ -8,7 +8,6 @@ namespace core::ecs {
 World::World(const App& app) {
 	ASSERTF(app.systems.size() > 0, "No systems registered to app!");
 
-	// Fill-out group_info_map.
 	struct GroupInfo {
 		Set<SystemGroup> subsequents;
 		Array<i32> systems;// Indexes into App::systems.
@@ -16,6 +15,7 @@ World::World(const App& app) {
 
 	Map<Optional<SystemGroup>, GroupInfo> group_info_map;
 
+	// Fill-out group_info_map.
 	for (const auto& ordering : app.group_ordering_info) {
 		const auto group_num_entries = get_group_info(ordering.group).num_entries;
 		for (i32 i = 0; i < group_num_entries; ++i) {
@@ -209,137 +209,5 @@ World::World(const App& app) {
 			}
 		}
 	}
-
-
-#if 0
-	// Resolve system ordering and dependencies.
-	struct SystemWithInfo {
-		SystemInfo info;
-		UniquePtr<SystemBase> system;
-	};
-
-	struct GroupInfo {
-		Array<SystemWithInfo> systems;
-		Set<SystemGroup> subsequents;// Set so we don't allow duplicates.
-	};
-
-	// Match systems with their group.
-	Map<Optional<SystemGroup>, GroupInfo> groups;
-
-	// Add map entries for each present group with atleast one system in it.
-	for (const auto& create_system_info : app.systems) {
-		SystemInfo info = create_system_info.info;
-		UniquePtr<SystemBase> system = create_system_info.factory(info.requirements);
-
-		groups[info.group].systems.push_back(SystemWithInfo{
-			.info = std::move(info),
-			.system = std::move(system),
-		});
-	}
-
-	// Initialize the "subsequents" member of GroupInfo.
-	for (const auto& ordering : app.group_ordering_info) {
-		if (ordering.ordering.prerequisites.empty() && ordering.ordering.subsequents.empty()) {
-			continue;
-		}
-
-		const auto num_entries_in_group = get_group_info(ordering.group).num_entries;
-		for (u32 i = 0; i < num_entries_in_group; ++i) {
-			const SystemGroup system_group{
-				.group = ordering.group,
-				.value = static_cast<u8>(i),
-			};
-			auto group_it = groups.find(Optional<SystemGroup>{system_group});
-
-			// No systems in group. Skip.
-			if (group_it == groups.end()) {
-				continue;
-			}
-
-			auto& group = group_it->second;
-
-			// Automatically add the next enum value within the group as a subsequent dependency.
-			if (i < num_entries_in_group - 1) {
-				const SystemGroup next_group_value{
-					.group = system_group.group,
-					.value = static_cast<u8>(system_group.value + 1),
-				};
-
-				// Only add as a subsequent if there's any systems using this group.
-				if (groups.contains(next_group_value)) {
-					group.subsequents.insert(next_group_value);
-				}
-			}
-
-			// Add subsequents to this list.
-			for (const auto& subsequent : ordering.ordering.subsequents) {
-				if (subsequent != system_group && groups.contains(subsequent)) {// Only add the group as a subsequent if there's any systems associated with it.
-					group.subsequents.insert(subsequent);
-				}
-			}
-
-			// Add this to the subsequent list of prerequisite groups.
-			for (const auto& prerequisite : ordering.ordering.prerequisites) {
-				auto found = groups.find(prerequisite);
-				if (found != groups.end() && *found->first != prerequisite) {
-					found->second.subsequents.insert(prerequisite);
-				}
-			}
-		}
-	}
-
-	// Probably prohibitively slow (if there are a lot of groups). Atleast this only happens once. Allocators would probably help a lot.
-	FnRef<void(SystemGroup, const Array<SystemGroup>&)> self;
-	const auto recursively_clean_up_dependencies = [&](const SystemGroup group, const Array<SystemGroup>& previously_visited_groups) {
-		const auto subsequents = groups[group].subsequents;// Take a copy of the set since we will be removing elements.
-		for (const SystemGroup& subsequent : subsequents) {
-			// Ensure there are no circular ordering dependencies.
-#if ASSERTIONS_ENABLED
-			{
-				const auto found_previously_visited_group = std::find(previously_visited_groups.begin(), previously_visited_groups.end(), subsequent);
-				ASSERTF(found_previously_visited_group == previously_visited_groups.end(),
-					"Detected group circular-dependency! {}[{}] and {}[{}] are both scheduled to run after the other!",
-					get_group_info(found_previously_visited_group->group).name, found_previously_visited_group->value, get_group_info(group.group).name, group.value);
-			}
-#endif
-
-			for (const SystemGroup& previously_visited_group : previously_visited_groups) {
-				const auto num_removed = groups[previously_visited_group].subsequents.erase(subsequent);
-				if (num_removed > 0) {
-					fmt::println("Removed subsequent dependency {} from group {}!", get_group_info(subsequent.group).name, get_group_info(group.group).name);
-				}
-			}
-
-			auto new_previously_visited_groups = previously_visited_groups;
-			new_previously_visited_groups.push_back(group);
-
-			self(subsequent, new_previously_visited_groups);
-		}
-	};
-
-	self = recursively_clean_up_dependencies;
-
-#if 01
-	for (const auto& [group, _] : groups) {
-		if (group) {
-			recursively_clean_up_dependencies(*group, {});
-		}
-	}
-#endif
-
-	for (const auto& [group, info] : groups) {
-		if (!group) { 
-			continue;
-		}
-		fmt::println("{}[{}] has subsequents {}", get_group_info(group->group).name, group->value,
-			[&] {
-				String list;
-				for (const auto& subsequent : info.subsequents) {
-					list += fmt::format("{}[{}], ", get_group_info(subsequent.group).name, subsequent.value);
-				}
-				return list;
-			}());
-	}
-#endif
 }
 }

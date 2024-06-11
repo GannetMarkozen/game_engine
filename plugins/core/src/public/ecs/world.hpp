@@ -152,15 +152,15 @@ private:
 struct World {
 	NON_COPYABLE(World);
 
+	// Constructs systems and determines system ordering.
+	explicit World(const App& app);
+
 	struct System {
 		SharedPtr<Task> task;
 		UniquePtr<SystemBase> system;
 		Array<u32> subsequents;// System indices that are enqueued once this system has completed executing.
 		Array<u32> contentious_systems;// System indices not allowed to run in-parallel with this one.
 	};
-
-	// Constructs systems and determines system ordering.
-	explicit World(const App& app);
 
 	// Thread-safe.
 	// Reserves an entity identifier but doesn't do any of the construction. Okay to be called from systems.
