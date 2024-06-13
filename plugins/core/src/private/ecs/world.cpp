@@ -1,7 +1,7 @@
 #include "ecs/world.hpp"
 #include "ecs/app.hpp"
 
-namespace core::ecs {
+namespace ecs {
 // @NOTE: This is insane.
 // @TODO: Resolving system dependencies should ideally be handled by the App rather than
 // per-world instance, but that potentially complicates instancing systems and stuff.
@@ -62,7 +62,7 @@ World::World(const App& app) {
 	}
 
 	// Filter groups to remove any without any valid systems and remove extraneous subsequent dependencies (will improve TaskGraph performance).
-	const auto recursively_filter_extraneous_dependencies = [&](auto&& self, const SystemGroup group, const Array<SystemGroup>& previously_visited_groups) {
+	const auto recursively_prune_extraneous_dependencies = [&](auto&& self, const SystemGroup group, const Array<SystemGroup>& previously_visited_groups) {
 		const auto& subsequents = group_info_map[group].subsequents;
 		if (subsequents.empty()) {
 			return;
@@ -97,7 +97,7 @@ World::World(const App& app) {
 
 	for (const auto& [group, _] : group_info_map) {
 		if (group) {
-			recursively_filter_extraneous_dependencies(recursively_filter_extraneous_dependencies, *group, {});
+			recursively_prune_extraneous_dependencies(recursively_prune_extraneous_dependencies, *group, {});
 		}
 	}
 

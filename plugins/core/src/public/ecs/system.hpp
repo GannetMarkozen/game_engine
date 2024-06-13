@@ -2,7 +2,7 @@
 
 #include "defines.hpp"
 #include "query.hpp"
-
+#include "concurrency/task_graph.hpp"
 
 struct SystemGroupInfo {
 	StringView name;
@@ -23,7 +23,7 @@ struct GroupTraitsBase {
 template<concepts::Enum T>
 struct GroupTraits : public GroupTraitsBase<T> {};
 
-namespace core::ecs {
+namespace ecs {
 namespace concepts {
 template<typename T>
 concept Group = requires {
@@ -96,10 +96,12 @@ struct GroupOrdering {
 };
 
 struct SystemInfo {
-	StringView name = "None";
+	StringView name = "Unassigned";
 	Requirements requirements;
 	Optional<SystemGroup> group;// The "group" this system runs within.
 	Optional<f32> tick_interval;// Unimplemented.
+	task::Priority::Type priority = task::Priority::NORMAL;
+	task::Thread::Type thread = task::Thread::ANY;
 };
 
 struct alignas(CACHE_LINE_SIZE) SystemBase {
@@ -119,9 +121,9 @@ concept System = (!std::is_same_v<T, SystemBase> && std::derived_from<T, SystemB
 
 namespace std {
 template<>
-struct hash<core::ecs::SystemGroup> {
+struct hash<ecs::SystemGroup> {
 	[[nodiscard]]
-	constexpr fn operator()(const core::ecs::SystemGroup& group) const -> u32 {
+	constexpr fn operator()(const ecs::SystemGroup& group) const -> u32 {
 		return math::hash_combine(std::hash<IntAlias<u16>>{}(group.group), std::hash<u8>{}(group.value));
 	}
 };

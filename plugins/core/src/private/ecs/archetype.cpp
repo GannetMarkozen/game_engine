@@ -1,7 +1,7 @@
 #include "ecs/archetype.hpp"
 #include "ecs/component.hpp"
 
-namespace core::ecs {
+namespace ecs {
 Archetype::Archetype(ComponentMask in_component_mask)
 	: component_mask{std::move(in_component_mask)} {
 	Array<ComponentId> ids;

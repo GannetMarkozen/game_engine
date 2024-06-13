@@ -8,7 +8,7 @@
 
 #include "concurrency/thread_affinity.hpp"
 
-namespace core::utils {
+namespace utils {
 
 #if defined(_WIN32) || defined(_WIN64)
 

@@ -7,11 +7,11 @@
 #include "component.hpp"
 #include "archetype.hpp"
 
-namespace core {
+namespace task {
 struct Task;
 }
 
-namespace core::ecs {
+namespace ecs {
 struct ComponentMask;
 struct Archetype;
 struct App;
@@ -156,7 +156,7 @@ struct World {
 	explicit World(const App& app);
 
 	struct System {
-		SharedPtr<Task> task;
+		SharedPtr<task::Task> task;
 		UniquePtr<SystemBase> system;
 		Array<u32> subsequents;// System indices that are enqueued once this system has completed executing.
 		Array<u32> contentious_systems;// System indices not allowed to run in-parallel with this one.

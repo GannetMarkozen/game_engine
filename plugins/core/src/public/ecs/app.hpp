@@ -4,7 +4,7 @@
 #include "system.hpp"
 #include "scheduler.hpp"
 
-namespace core::ecs {
+namespace ecs {
 struct App;
 struct World;
 

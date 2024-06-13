@@ -3,7 +3,7 @@
 #include "../defines.hpp"
 #include "system.hpp"
 
-namespace core::ecs {
+namespace ecs {
 struct Scheduler {
 	fn schedule_system(SystemInfo system) -> void;
 

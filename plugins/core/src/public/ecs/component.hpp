@@ -76,7 +76,7 @@ struct ComponentTraitsBase {
 template<typename T>
 struct ComponentTraits : public ComponentTraitsBase<T> {};
 
-namespace core::ecs {
+namespace ecs {
 	struct ComponentRecord {
 		StringView name;
 		void(*construct)(void*, usize);

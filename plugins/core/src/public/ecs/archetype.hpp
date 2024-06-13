@@ -3,7 +3,7 @@
 #include "component.hpp"
 #include "entity.hpp"
 
-namespace core::ecs {
+namespace ecs {
 struct alignas(CACHE_LINE_SIZE) Archetype {
 	NON_COPYABLE(Archetype);
 

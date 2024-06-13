@@ -5,7 +5,7 @@
 #include "component.hpp"
 #include "world.hpp"
 
-namespace core::ecs {
+namespace ecs {
 
 struct Requirements {
 	template<typename... Ts>

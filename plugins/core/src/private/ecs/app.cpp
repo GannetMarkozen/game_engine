@@ -1,6 +1,6 @@
 #include "ecs/app.hpp"
 
-namespace core::ecs {
+namespace ecs {
 fn App::run(const usize num_worlds) -> void {
 	ASSERT(num_worlds > 0);
 

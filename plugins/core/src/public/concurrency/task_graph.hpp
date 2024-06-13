@@ -13,7 +13,6 @@
 
 #if 01
 
-namespace core {
 namespace task {
 namespace Priority { enum Type : u8 { HIGH, NORMAL, LOW}; }
 namespace Thread { enum Type : u8 { MAIN, ANY }; }
@@ -22,7 +21,6 @@ static constexpr usize PRIORITY_COUNT = 3;
 static constexpr usize THREAD_COUNT = 2;
 static constexpr usize THREAD_PRIORITY_COUNT = 2;
 static constexpr usize NAMED_THREAD_COUNT = THREAD_COUNT - 1;
-}
 
 // This enum should match up with task::Thread. It's just semantically different.
 namespace ThreadType { enum Type : u8 { MAIN = task::Thread::MAIN, WORKER = task::Thread::ANY }; }

@@ -16,13 +16,11 @@ volatile bool request_exit = false;
 #include "core/src/public/ecs/archetype.hpp"
 #include "core/src/public/concurrency/threading.hpp"
 
-fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
-	using namespace core;
-
+fn main_loop(const SharedPtr<task::Task>& this_task) -> void {
 	const auto start = std::chrono::high_resolution_clock::now();
 
 	for (i32 i = 0; i < 10; ++i) {
-		TaskGraph::get().parallel_for(1000, [&](const i32 i) {
+		task::TaskGraph::get().parallel_for(1000, [&](const i32 i) {
 			++count;
 			std::this_thread::sleep_for(std::chrono::microseconds{1});
 		});
@@ -34,10 +32,6 @@ fn main_loop(const SharedPtr<core::Task>& this_task) -> void {
 
 	request_exit = true;
 }
-
-enum class SomeGroup : u8 {
-	START, MIDDLE, END, COUNT
-};
 
 enum class SomeOtherGroup : u8 {
 	START, END, COUNT
@@ -82,15 +76,44 @@ struct AttachParent {
 #include "core/src/public/ecs/query.hpp"
 #include "core/src/public/ecs/world.hpp"
 
-struct SomeSystem final : public core::ecs::SystemBase {
-	explicit SomeSystem(core::ecs::Requirements& out_requirements) {
+struct SomeOtherSystem final : public ecs::SystemBase {
+	explicit SomeOtherSystem(ecs::Requirements& out_requirements) {
+		out_requirements.writes<Name>();
+		out_requirements.writes<AttachParent>();
+	}
+
+	virtual fn execute(ecs::World& world) -> void override {
+		fmt::println("Executed");
+	}
+};
+
+struct OnFrameEndSystem final : public ecs::SystemBase {
+	explicit OnFrameEndSystem(ecs::Requirements& out_requirements) {
+		out_requirements.writes<Name>();
+	}
+
+	virtual fn execute(ecs::World& world) -> void override {
+		fmt::println("The frame has ended");
+	}
+};
+
+#include "core/src/public/ecs/app.hpp"
+#include "core/src/public/ecs/query.hpp"
+
+
+enum class SomeGroup : u8 {
+	START, MIDDLE, END, COUNT
+};
+
+struct SomeSystem final : public ecs::SystemBase {
+	explicit SomeSystem(ecs::Requirements& out_requirements) {
 		query.reads<Name>();
 
 		out_requirements |= query;
 	}
 
-	virtual fn execute(core::ecs::World& world) -> void override {
-		query.for_each_matching_archetype(world, [&](core::ecs::Archetype& archetype) {
+	virtual fn execute(ecs::World& world) -> void override {
+		query.for_each_matching_archetype(world, [&](ecs::Archetype& archetype) {
 			archetype.for_each_view<const Name>([&](const u32 count, const Name* names) {
 				for (u32 i = 0; i < count; ++i) {
 					fmt::println("Name[{}] == {}", i, names[i].value);
@@ -99,37 +122,12 @@ struct SomeSystem final : public core::ecs::SystemBase {
 		});
 	}
 
-	core::ecs::Query query;
+	ecs::Query query;
 };
-
-struct SomeOtherSystem final : public core::ecs::SystemBase {
-	explicit SomeOtherSystem(core::ecs::Requirements& out_requirements) {
-		out_requirements.writes<Name>();
-		out_requirements.writes<AttachParent>();
-	}
-
-	virtual fn execute(core::ecs::World& world) -> void override {
-		fmt::println("Executed");
-	}
-};
-
-struct OnFrameEndSystem final : public core::ecs::SystemBase {
-	explicit OnFrameEndSystem(core::ecs::Requirements& out_requirements) {
-		out_requirements.writes<Name>();
-	}
-
-	virtual fn execute(core::ecs::World& world) -> void override {
-		fmt::println("The frame has ended");
-	}
-};
-
-#include <flecs.h>
-#include "core/src/public/ecs/app.hpp"
-#include "core/src/public/ecs/query.hpp"
 
 struct SomePlugin {
-	fn init(core::ecs::App& app) -> void {
-		using namespace core::ecs;
+	fn init(ecs::App& app) -> void {
+		using namespace ecs;
 
 		app
 			.add_group<GameFrameGroup>()
@@ -152,8 +150,7 @@ struct SomePlugin {
 };
 
 fn main(const i32 args_count, const char* args[]) -> i32 {
-	using namespace core;
-	using namespace core::ecs;
+	using namespace ecs;
 
 	App{}
 		.add_plugin(SomePlugin{})
