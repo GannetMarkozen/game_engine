@@ -3,32 +3,32 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
-#include <tuple>
 #include <array>
 #include <span>
 #include <memory>
 #include <string>
 #include <optional>
+#include <variant>
 #include <functional>
 #include <fmt/printf.h>
 #include <fmt/color.h>
 #include <stacktrace>
 
-#ifdef __clang__
+#if defined(__clang__)
 
 #define COMPILER_CLANG 1
 #define COMPILER_GCC 0
 #define COMPILER_MSVC 0
 #define COMPILER_NAME "Clang"
 
-#elifdef __GNUC__
+#elif defined(__GNUC__)
 
 #define COMPILER_CLANG 0
 #define COMPILER_GCC 1
 #define COMPILER_MSVC 0
 #define COMPILER_NAME "GNU GCC"
 
-#elifdef __MSC_VER
+#elif defined(_MSC_VER)
 
 #define COMPILER_CLANG 0
 #define COMPILER_GCC 0
@@ -51,14 +51,8 @@ static_assert(false, "EXPORT_API already defined!");
 
 #define ASSUME(...) __builtin_assume(__VA_ARGS__)
 #define UNREACHABLE __builtin_unreachable()
-
-#ifndef FORCEINLINE
 #define FORCEINLINE __attribute__((always_inline)) inline
-#endif
-
-#ifndef NOINLINE
 #define NOINLINE __attribute__((noinline))
-#endif
 
 #elif COMPILER_MSVC
 
@@ -78,14 +72,14 @@ static_assert(false, "Unknown compiler");
 #endif
 
 #define DECLARE_ENUM_CLASS_FLAGS(Enum) \
-	inline constexpr Enum& operator|=(Enum& Lhs, Enum Rhs) { return Lhs = (Enum)((__underlying_type(Enum))Lhs | (__underlying_type(Enum))Rhs); } \
-	inline constexpr Enum& operator&=(Enum& Lhs, Enum Rhs) { return Lhs = (Enum)((__underlying_type(Enum))Lhs & (__underlying_type(Enum))Rhs); } \
-	inline constexpr Enum& operator^=(Enum& Lhs, Enum Rhs) { return Lhs = (Enum)((__underlying_type(Enum))Lhs ^ (__underlying_type(Enum))Rhs); } \
-	inline constexpr Enum  operator| (Enum  Lhs, Enum Rhs) { return (Enum)((__underlying_type(Enum))Lhs | (__underlying_type(Enum))Rhs); } \
-	inline constexpr Enum  operator& (Enum  Lhs, Enum Rhs) { return (Enum)((__underlying_type(Enum))Lhs & (__underlying_type(Enum))Rhs); } \
-	inline constexpr Enum  operator^ (Enum  Lhs, Enum Rhs) { return (Enum)((__underlying_type(Enum))Lhs ^ (__underlying_type(Enum))Rhs); } \
-	inline constexpr bool  operator! (Enum  E)             { return !(__underlying_type(Enum))E; } \
-	inline constexpr Enum  operator~ (Enum  E)             { return (Enum)~(__underlying_type(Enum))E; }
+	FORCEINLINE constexpr Enum& operator|=(Enum& Lhs, const Enum Rhs) 			{ return Lhs = (Enum)((__underlying_type(Enum))Lhs | (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr Enum& operator&=(Enum& Lhs, const Enum Rhs) 			{ return Lhs = (Enum)((__underlying_type(Enum))Lhs & (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr Enum& operator^=(Enum& Lhs, const Enum Rhs) 			{ return Lhs = (Enum)((__underlying_type(Enum))Lhs ^ (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr Enum  operator| (const Enum Lhs, const Enum Rhs)	{ return (Enum)((__underlying_type(Enum))Lhs | (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr Enum  operator& (const Enum Lhs, const Enum Rhs) 	{ return (Enum)((__underlying_type(Enum))Lhs & (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr Enum  operator^ (const Enum Lhs, const Enum Rhs) 	{ return (Enum)((__underlying_type(Enum))Lhs ^ (__underlying_type(Enum))Rhs); } \
+	FORCEINLINE constexpr bool  operator! (const Enum E)             				{ return !(__underlying_type(Enum))E; } \
+	FORCEINLINE constexpr Enum  operator~ (const Enum E)             				{ return (Enum)~(__underlying_type(Enum))E; }
 
 #define NON_COPYABLE(Type) \
 	Type(Type&&) = delete; \
@@ -94,9 +88,10 @@ static_assert(false, "Unknown compiler");
 	Type& operator=(Type&&) = delete;
 
 // Helper macro to perfectly forward an auto&& type (annoying it has to be a macro).
-#define FORWARD_AUTO(value) std::forward<std::decay_t<decltype(value)>>(value)
+#define FORWARD_AUTO(value) std::forward<decltype(value)>(value)
 
-#define fn auto
+// Yeah. I'm doing that.
+#define null nullptr
 
 using i8 = int8_t;
 using u8 = uint8_t;
@@ -120,61 +115,38 @@ constexpr usize CACHE_LINE_SIZE = 64;
 
 enum NoInit { NO_INIT };
 
-namespace concepts {
-template<typename T>
+namespace cpts {
+template <typename T>
 concept Enum = std::is_enum_v<T>;
-}
 
-template<typename T, typename... Args>
+template <typename T>
+concept EnumWithCount = requires {
+	{ T::COUNT } -> std::same_as<T>;
+} && Enum<T>;
+
+template <typename T>
+concept Pointer = std::is_pointer_v<T>;
+
+template <typename T, typename... Args>
 concept Invokable = requires(T&& t, Args&&... args) {
 	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) };
 };
 
-template<typename T, typename Return, typename... Args>
+template <typename T, typename Return, typename... Args>
 concept InvokableReturns = requires(T&& t, Args&&... args) {
 	{ std::invoke(std::forward<T>(t), std::forward<Args>(args)...) } -> std::same_as<Return>;
 };
+}
 
-template<typename T, typename Allocator = std::allocator<T>>
-using Array = std::vector<T, Allocator>;
+namespace utils {
+// Executes a callable and forces it to not inline.
+template <typename... Args, cpts::Invokable<Args&&...> Fn>
+NOINLINE auto noinline_exec(Fn&& fn, Args&&... args) -> decltype(auto) {
+	return (std::invoke(std::forward<Fn>(fn), std::forward<Args>(args)...));
+}
 
-template<typename T, usize EXTENT = std::dynamic_extent>
-using Span = std::span<T, EXTENT>;
-
-template<typename T, usize SIZE>
-using StaticArray = std::array<T, SIZE>;
-
-template<typename T1, typename T2>
-using Pair = std::pair<T1, T2>;
-
-using String = std::string;
-using StringView = std::string_view;
-
-template<typename... Ts>
-using Tuple = std::tuple<Ts...>;
-
-template<typename Key, typename Value, typename HashOp = std::hash<Key>, typename EqualOp = std::equal_to<Key>, typename Allocator = std::allocator<Pair<const Key, Value>>>
-using Map = std::unordered_map<Key, Value, HashOp, EqualOp, Allocator>;
-
-template<typename T, typename HashOp = std::hash<T>, typename EqualOp = std::equal_to<T>, typename Allocator = std::allocator<T>>
-using Set = std::unordered_set<T, HashOp, EqualOp, Allocator>;
-
-template<typename T, typename Deleter = std::default_delete<T>>
-using UniquePtr = std::unique_ptr<T, Deleter>;
-
-template<typename T>
-using SharedPtr = std::shared_ptr<T>;
-
-template<typename T>
-using WeakPtr = std::weak_ptr<T>;
-
-template<typename T>
-using Optional = std::optional<T>;
-
-template<typename>
-class Fn;
-
-template<typename Return, typename... Params>
-class Fn<Return(Params...)> final : public std::function<Return(Params...)> {
-	using std::function<Return(Params...)>::function;
-};
+template <cpts::EnumWithCount T>
+consteval auto enum_count() {
+	return static_cast<__underlying_type(T)>(T::COUNT);
+}
+}

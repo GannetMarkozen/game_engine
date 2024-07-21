@@ -14,7 +14,9 @@ file(GLOB_RECURSE SOURCES src/private/*.cpp)
 
 add_library(core STATIC ${SOURCES})
 
-target_include_directories(core PUBLIC src/public)
+target_include_directories(core
+	PUBLIC src/public
+)
 
 option(BUILD_SHARED_LIBS "Build using shared libraries." ON)
 

@@ -1,433 +1,238 @@
 #pragma once
 
-#include <variant>
-#include <bitset>
-#include "math.hpp"
-#include "assert.hpp"
+#include "defines.hpp"
+#include <concepts>
+#include <type_traits>
+#include <utility>
 
-template<typename T>
-consteval fn get_type_name() -> StringView {
-	const StringView name = __PRETTY_FUNCTION__;
-#if defined(__clang__) || defined(__GNUC__)
-    // Extract between "T = " and "]"
-    const auto start = name.find('=') + 2;
-    const auto end = name.rfind(']');
-    return name.substr(start, end - start);
-#elif defined(_MSC_VER)
-    // Extract between "type_name<" and ">(void)"
-    const auto start = name.find('<') + 1;
-    const auto end = name.rfind('>');
-    return name.substr(start, end - start);
-#else
-    return name;
-#endif
-}
+template <typename T, typename Allocator = std::allocator<T>>
+using Array = std::vector<T, Allocator>;
+
+template <typename T, usize EXTENT = std::dynamic_extent>
+using Span = std::span<T, EXTENT>;
+
+template <typename T, usize SIZE>
+using StaticArray = std::array<T, SIZE>;
+
+template <typename T1, typename T2>
+using Pair = std::pair<T1, T2>;
+
+using String = std::string;
+using StringView = std::string_view;
+
+template <typename... Ts>
+using Variant = std::variant<Ts...>;
+
+template <typename Key, typename Value, typename HashOp = std::hash<Key>, typename EqualOp = std::equal_to<Key>, typename Allocator = std::allocator<Pair<const Key, Value>>>
+using Map = std::unordered_map<Key, Value, HashOp, EqualOp, Allocator>;
+
+template <typename T, typename HashOp = std::hash<T>, typename EqualOp = std::equal_to<T>, typename Allocator = std::allocator<T>>
+using Set = std::unordered_set<T, HashOp, EqualOp, Allocator>;
+
+template <typename T, typename Deleter = std::default_delete<T>>
+using UniquePtr = std::unique_ptr<T, Deleter>;
+
+template <typename T>
+using SharedPtr = std::shared_ptr<T>;
+
+template <typename T>
+using WeakPtr = std::weak_ptr<T>;
+
+template <typename>
+struct Fn;
+
+template <typename Return, typename... Params>
+struct Fn<Return(Params...)> final : public std::function<Return(Params...)> {
+	using std::function<Return(Params...)>::function;
+};
+
+template <typename>
+struct FnRef;
+
+template <typename Return, typename... Params>
+struct FnRef<Return(Params...)> {
+	constexpr FnRef(const FnRef&) = default;
+	constexpr auto operator=(const FnRef&) -> FnRef& = default;
+
+	template <cpts::Invokable<Return, Params...> T>
+	FORCEINLINE constexpr FnRef(T&& other [[clang::lifetimebound]])
+		:
+		data{&other},
+		fn{[](void* data, Params&&... params) -> Return {
+			return std::invoke(static_cast<std::decay_t<T>*>(data), std::forward<Params>(params)...);
+		}} {}
+
+	FORCEINLINE constexpr auto operator()(Params&&... params) -> Return {
+		return fn(data, std::forward<Params>(params)...);
+	}
+
+private:
+	void* data;
+	Return(*fn)(void*, Params...);
+};
 
 namespace utils {
-template<typename T, typename... Ts>
-[[nodiscard]]
-consteval fn contains_type() -> bool {
+template <typename... Ts>
+[[nodiscard]] consteval auto contains_type_by_predicate(auto&& fn) -> bool {
+	return (fn.template operator()<Ts>() || ...);
+}
+
+template <typename... Ts>
+[[nodiscard]] consteval auto index_of_type_by_predicate(auto&& fn) -> usize {
+	usize index = 0;
+	((fn.template operator()<Ts>() ? true : [&] { ++index; return false; }()) || ...);
+	return index;
+}
+
+template <typename T, typename... Ts>
+[[nodiscard]] consteval auto contains_type() -> bool {
 	return (std::is_same_v<T, Ts> || ...);
 }
 
-template<typename T, typename... Ts>
+template <typename T, typename... Ts>
 requires (contains_type<T, Ts...>())
-[[nodiscard]]
-consteval fn index_of_type() -> usize {
+[[nodiscard]] consteval auto index_of_type() -> usize {
 	usize index = 0;
 	((std::is_same_v<T, Ts> ? true : [&] { ++index; return false; }()) || ...);
 	return index;
 }
+
+template <typename T, typename Member>
+[[nodiscard]] auto get_member_offset(const Member T::* member) -> usize {
+	return reinterpret_cast<usize>(&(static_cast<T*>(null)->*member));
+}
 }
 
-template<typename... Ts>
-class Variant : public std::variant<Ts...> {
-public:
-	using std::variant<Ts...>::variant;
+namespace cpts {
+template <typename T1, typename T2>
+concept ExactSame = std::same_as<T1, T2>;
 
-	template<typename T>
-	[[nodiscard]]
-	static consteval fn contains() -> bool {
-		return (std::is_same_v<T, Ts> || ...);
-	}
+template <typename T1, typename T2>
+concept Same = ExactSame<std::decay_t<T1>, std::decay_t<T2>>;
+}
 
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	static consteval fn index_of() -> usize {
-		usize index = 0;
-		((std::is_same_v<T, Ts> ? true : [&] { ++index; return false; }()) || ...);
-		return index;
-	}
-
-	template<usize INDEX>
-	using TypeAt = std::tuple_element_t<INDEX, std::tuple<Ts...>>;
-
-private:
-	// Silences weird warnings from calling .index() within this class.
-	[[nodiscard]]
-	FORCEINLINE static fn get_index_hack(const std::variant<Ts...>& variant) {
-		return variant.index();
-	}
-
-	template<typename T, typename... Args>
-	FORCEINLINE static fn emplace_hack(std::variant<Ts...>& variant, Args&&... args) -> void {
-		variant.template emplace<T>(std::forward<Args>(args)...);
-	}
-
-public:
-
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	FORCEINLINE constexpr fn is() const -> bool {
-		return get_index_hack(*this) == index_of<T>();
-	}
-
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	FORCEINLINE constexpr fn get() -> T& {
-		ASSERTF(is<T>(), "Attempted to get {} when variant is {}!", get_type_name<T>(), match([]<typename ActualType>() { return get_type_name<ActualType>(); }));
-		return std::get<T>(*this);
-	}
-
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	FORCEINLINE constexpr fn get() const -> const T& {
-		ASSERTF(is<T>(), "Attempted to get {} when variant is {}!", get_type_name<T>(), match([]<typename ActualType>() { return get_type_name<ActualType>(); }));
-		return std::get<T>(*this);
-	}
-
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	FORCEINLINE constexpr fn try_get() -> T* {
-		return is<T>() ? &get<T>() : nullptr;
-	}
-
-	template<typename T>
-	requires (contains<T>())
-	[[nodiscard]]
-	FORCEINLINE constexpr fn try_get() const -> const T* {
-		return is<T>() ? &get<T>() : nullptr;
-	}
-
-	template<typename Func, typename... Args>
-	FORCEINLINE static constexpr fn match_index(const std::integral auto index, Func&& func, Args&&... args) -> decltype(std::forward<Func>(func).template operator()<TypeAt<0>>(std::forward<Args>(args)...)) {
-		ASSERTF(index >= 0 && index < sizeof...(Ts), "Attempted to index into type at index {} when num types is {}!", index, sizeof...(Ts));
-
-		using Return = decltype(std::forward<Func>(func).template operator()<TypeAt<0>>(std::forward<Args>(args)...));
-
-		static constexpr Return(*table[])(Func&&, Args&&...) {
-			[](Func&& func, Args&&... args) -> Return {
-				if constexpr (std::is_same_v<Return, void>) {
-					std::forward<Func>(func).template operator()<Ts>(std::forward<Args>(args)...);
-				} else {
-					return std::forward<Func>(func).template operator()<Ts>(std::forward<Args>(args)...);
-				}
-			}...
-		};
-		static_assert(std::size(table) == sizeof...(Ts));
-
-		if constexpr (std::is_same_v<Return, void>) {
-			table[index](std::forward<Func>(func), std::forward<Args>(args)...);
-		} else {
-			return table[index](std::forward<Func>(func), std::forward<Args>(args)...);
-		}
-	}
-
-	template<typename Func, typename... Args>
-	FORCEINLINE constexpr fn match(Func&& func, Args&&... args) const -> decltype(match_index(0, std::forward<Func>(func), std::forward<Args>(args)...)) {
-		return match_index(get_index_hack(*this), std::forward<Func>(func), std::forward<Args>(args)...);
-	}
-
-	template<typename T>
-	requires (contains<std::decay_t<T>>())
-	FORCEINLINE constexpr fn set(T&& value) -> T& {
-		emplace_hack<std::decay_t<T>>(*this, std::forward<T>(value));
-		return get<std::decay_t<T>>();
-	}
+namespace utils {
+namespace impl {
+template <usize I, typename T, typename... Ts>
+struct TypeAtIndex {
+	static_assert(sizeof...(Ts) > 0, "Could not find type at index!");
+	using Type = typename TypeAtIndex<I - 1, Ts...>::Type;
 };
 
-template<usize BITS>
-using BitSet = std::bitset<BITS>;
+template <typename T, typename... Ts>
+struct TypeAtIndex<0, T, Ts...> {
+	using Type = T;
+};
 
-// @TODO: Make an inline allocator for this otherwise it will be super slow.
-template<std::unsigned_integral Word = u32, typename Allocator = std::allocator<Word>>
-class BitArray {
-public:
-	static constexpr usize NUM_BYTES_PER_WORD = sizeof(Word);
-	static constexpr usize NUM_BITS_PER_WORD = NUM_BYTES_PER_WORD * 8;
+template <usize, typename>
+struct TypeAtIndexInContainer;
 
-	struct ConstBitReference {
-		constexpr explicit ConstBitReference(const Word mask, Word& value)
-			: mask{mask}, value{value} {}
+template <usize I, template <typename...> typename Container, typename... Ts>
+struct TypeAtIndexInContainer<I, Container<Ts...>> {
+	using Type = typename TypeAtIndex<I, Ts...>::Type;
+};
+}
 
-		constexpr ConstBitReference(const ConstBitReference& other)
-			: ConstBitReference{other.mask, other.value} {}
+template <usize I, typename... Ts>
+using TypeAtIndex = typename impl::TypeAtIndex<I, Ts...>::Type;
 
-		[[nodiscard]]
-		FORCEINLINE constexpr operator bool() const {
-			return mask & value;
-		}
+template <usize I, typename Container>
+using TypeAtIndexInContainer = typename impl::TypeAtIndexInContainer<I, Container>::Type;
+}
 
-	protected:
-		Word mask;
-		Word& value;
-	};
+template <typename... Ts>
+struct Tuple;
 
-	struct BitReference : public ConstBitReference {
-		using ConstBitReference::ConstBitReference;
+namespace cpts {
+namespace impl {
+template <typename>
+struct IsTuple;
 
-		FORCEINLINE constexpr fn operator=(const bool in_value) -> BitReference& {
-		if (in_value) {
-			this->value |= this->mask;
+template <template <typename...> typename Container, typename... Ts>
+struct IsTuple<Container<Ts...>> {
+	static constexpr bool VALUE = std::same_as<Container<Ts...>, Tuple<Ts...>>;
+};
+}
+
+template <typename T>
+concept IsTuple = impl::IsTuple<T>::VALUE;
+}
+
+template <typename T, typename... Ts>
+struct Tuple<T, Ts...> {
+	template <typename...>
+	friend struct Tuple;
+
+	[[nodiscard]] FORCEINLINE constexpr Tuple() = default;
+	[[nodiscard]] FORCEINLINE constexpr explicit Tuple(NoInit)
+		: value{NO_INIT}, next{NO_INIT} {}
+
+	template <typename Arg, typename... Args> requires (std::constructible_from<Arg, T> && sizeof...(Ts) == sizeof...(Args))
+	[[nodiscard]] FORCEINLINE constexpr explicit Tuple(Arg&& arg, Args&&... args)
+		: value{std::forward<Arg>(arg)}, next{std::forward<Args>(args)...} {}
+
+	template <template <typename...> typename Container, typename Other, typename... Others>
+	requires (cpts::IsTuple<Container<Other, Others...>> && std::assignable_from<Other, T> && sizeof...(Ts) == sizeof...(Others))
+	FORCEINLINE constexpr auto operator=(Container<Other, Others...>&& tuple) -> Tuple& {
+		value = std::forward<Other>(tuple.value);
+		next = std::forward<Container<Other, Others...>>(tuple);
+		return *this;
+	}
+
+	template <typename Other, typename... Others> requires (sizeof...(Ts) == sizeof...(Others))
+	FORCEINLINE constexpr auto operator==(const Tuple<Other, Others...>& other) const -> bool {
+		return value == other.value && next == other.next;
+	}
+
+	template <usize I, typename Self> requires (I < sizeof...(Ts) + 1)
+	[[nodiscard]] FORCEINLINE constexpr auto get(this Self&& self) -> decltype(auto) {
+		if constexpr (I == 0) {
+			return (std::forward<Self>(self).value);
 		} else {
-			this->value &= ~this->mask;
-		}
-		return *this;
-	}
-
-		FORCEINLINE constexpr fn operator=(const ConstBitReference& other) -> BitReference& {
-			return *this = static_cast<bool>(other);
-		}
-	};
-
-	[[nodiscard]]
-	fn operator[](const std::integral auto index) -> BitReference {
-		ASSERTF(index < num_bits, "Attempted to access index {} when there are {} bits allocated!", index, num_bits);
-		return BitReference{static_cast<Word>(1) << (index % NUM_BITS_PER_WORD), array[index / NUM_BITS_PER_WORD]};
-	}
-
-	[[nodiscard]]
-	fn operator[](const std::integral auto index) const -> ConstBitReference {
-		return (*const_cast<BitArray*>(this))[index];
-	}
-
-	[[nodiscard]]
-	fn operator==(const BitArray& other) const -> bool {
-		if (num_bits != other.num_bits) return false;
-		for (usize i = 0; i < array.size(); ++i) {
-			if (array[i] != other.array[i]) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	fn operator|=(const BitArray& other) -> BitArray& {
-		set_min_size_bits(other.num_bits);
-		for (usize i = 0; i < other.array.size(); ++i) {
-			array[i] |= other.array[i];
-		}
-		return *this;
-	}
-
-	fn operator&=(const BitArray& other) -> BitArray& {
-		set_min_size_bits(other.num_bits);
-		for (usize i = 0; i < other.array.size(); ++i) {
-			array[i] &= other.array[i];
-		}
-		return *this;
-	}
-
-	[[nodiscard]]
-	fn operator|(const BitArray& other) const -> BitArray {
-		BitArray copy = *this;
-		return copy |= other;
-	}
-
-	[[nodiscard]]
-	fn operator&(const BitArray& other) const -> BitArray {
-		BitArray copy = *this;
-		return copy &= other;
-	}
-
-	[[nodiscard]]
-	fn operator|(const BitArray& other) && -> BitArray {
-		BitArray copy = std::move(*this);
-		return copy |= other;
-	}
-
-	[[nodiscard]]
-	fn operator&(const BitArray& other) && -> BitArray {
-		BitArray copy = std::move(*this);
-		return copy &= other;
-	}
-
-	fn for_each_set_bit(Invokable<u32> auto&& func) const -> void {
-		for (usize i = 0; i < array.size(); ++i) {
-			for (Word mask = array[i]; mask; mask &= mask - 1) {
-				std::invoke(func, math::count_trailing_zeros(mask) + i * NUM_BITS_PER_WORD);
-			}
+			return std::forward<Self>(self).next.template get<I - 1>();
 		}
 	}
 
-	[[nodiscard]]
-	fn has_all_zeroes() const -> bool {
-		for (const auto word : array) {
-			if (word != 0) {
-				return false;
-			}
-		}
-		return true;
+	template <usize I, typename Self> requires (std::same_as<std::decay_t<Self>, Tuple>)
+	[[nodiscard]] FORCEINLINE friend constexpr auto get(Self&& self) -> decltype(auto) {
+		return std::forward<Self>(self).template get<I>();
 	}
 
-	[[nodiscard]]
-	fn has_all_matching_set_bits(const BitArray& other) const -> bool {
-		const auto count = std::min(array.size(), other.array.size());
-		for (usize i = 0; i < count; ++i) {
-			if ((array[i] & other.array[i]) != array[i]) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	[[nodiscard]]
-	fn has_any_matching_set_bits(const BitArray& other) const -> bool {
-		const auto count = std::min(array.size(), other.array.size());
-		for (usize i = 0; i < count; ++i) {
-			if (array[i] & other.array[i]) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	[[nodiscard]]
-	fn find_first_set_bit(const usize search_start = 0) const -> Optional<usize> {
-		for (usize i = search_start; i < array.size(); ++i) {
-			if (array[i] != 0) {
-				return {math::count_trailing_zeros(array[i]) + i * NUM_BITS_PER_WORD};
-			}
-		}
-		return {};
-	}
-
-	[[nodiscard]]
-	fn find_first_unset_bit(const usize search_start = 0) const -> Optional<usize> {
-		for (usize i = search_start; i < array.size(); ++i) {
-			const auto value = ~array[i];
-			if (value != 0) {
-				return {math::count_trailing_zeros(value) + i * NUM_BITS_PER_WORD};
-			}
-		}
-		return {};
-	}
-
-	// If there are less words, resizes to fit that many words. Fills with zeros.
-	fn set_min_size_words(const usize num_words) -> bool {
-		if (array.size() >= num_words) {
-			return false;
-		}
-
-		const usize add_num_words = num_words - array.size();
-		array.reserve(num_words);
-		for (usize i = 0; i < add_num_words; ++i) {
-			array.push_back(0);
-		}
-
-		num_bits = num_words * NUM_BITS_PER_WORD;
-		return true;
-	}
-
-	// If there are less bits, resizes to fit that many bits. Fills with zeros.
-	fn set_min_size_bits(const usize in_num_bits) -> bool {
-		if (num_bits >= in_num_bits) {
-			return false;
-		}
-
-		const auto new_num_words = math::divide_and_round_up(in_num_bits, NUM_BITS_PER_WORD);
-		if (new_num_words > array.size()) [[unlikely]] {
-			array.reserve(new_num_words);
-
-			const auto add_num_words = new_num_words - array.size();
-			for (usize i = 0; i < add_num_words; ++i) {
-				array.push_back(0);
-			}
-		}
-
-		num_bits = in_num_bits;
-
-		return true;
-	}
-
-	// Inserts a bit at the given index. If the index is out of range the array will be resized with zeros to fit.
-	fn insert(const usize index, const bool value) -> void {
-		set_min_size_bits(index + 1);
-		(*this)[index] = value;
-	}
-
-	fn is_empty() -> bool {
-		return num_bits == 0;
-	}
-
-	fn clear() -> void {
-		array.clear();
-		num_bits = 0;
-	}
-
-	fn last() -> BitReference {
-		ASSERT(!is_empty());
-		return (*this)[num_bits - 1];
-	}
-
-	fn last() const -> ConstBitReference {
-		ASSERT(!is_empty());
-		return (*this)[num_bits - 1];
-	}
-
-	fn push(const bool value) -> void {
-		const u32 old_num_bytes = math::divide_and_round_up(num_bits, NUM_BITS_PER_WORD);
-		const u32 new_num_bytes = math::divide_and_round_up(++num_bits, NUM_BITS_PER_WORD);
-
-		if (new_num_bytes != old_num_bytes) [[unlikely]] {
-			array.push_back(0);
-		}
-
-		(*this)[num_bits - 1] = value;
-	}
-
-	fn pop() -> Optional<bool> {
-		if (is_empty()) return {};
-
-		const bool value = last();
-		--num_bits;
-
-		if (num_bits % NUM_BITS_PER_WORD == 0) [[unlikely]] {
-			array.pop_back();
-		}
-
-		return {value};
-	}
-
-	[[nodiscard]]
-	FORCEINLINE fn size() const -> usize {
-		return num_bits;
-	}
-
-	[[nodiscard]]
-	FORCEINLINE fn is_valid_index(const std::integral auto index) const -> bool {
-		return index < num_bits;
-	}
-
-	[[nodiscard]]
-	FORCEINLINE fn count_set_bits() const -> usize {
-		usize count = 0;
-		for (const auto& word : array) {
-			count += math::count_set_bits(word);
-		}
-		return count;
-	}
-
-	Array<Word, Allocator> array;
+	template <usize I>
+	using TypeAtIndex = utils::TypeAtIndex<I, T, Ts...>;
 
 private:
-	usize num_bits = 0;
+	T value;
+	Tuple<Ts...> next;
 };
+
+template <>
+struct Tuple<> {};
+
+//~ Support for structured bindings.
+template <typename... Ts>
+struct std::tuple_size<Tuple<Ts...>> : std::integral_constant<usize, sizeof...(Ts)> {};
+
+template <usize I, typename... Ts>
+struct std::tuple_element<I, Tuple<Ts...>> {
+	using type = Tuple<Ts...>::template TypeAtIndex<I>;
+};
+//~
+
+namespace utils {
+template <typename... Args>
+[[nodiscard]] FORCEINLINE constexpr auto make_tuple(Args&&... args) {
+	return Tuple<std::decay_t<Args>...>{std::forward<Args>(args)...};
+}
+
+template <typename... Args>
+[[nodiscard]] FORCEINLINE constexpr auto tie(Args&... outs) {
+	return Tuple<Args&...>{outs...};
+}
+}
+
+template <typename... Ts>
+struct TypeList {};
 
 // Subclass this to make an integer type that can't be coerced into other IntAlias types.
 template<std::integral T>
@@ -437,29 +242,23 @@ struct IntAlias {
 	constexpr explicit IntAlias(const std::integral auto in_value) : value{in_value} {}
 	constexpr IntAlias(const IntAlias&) = default;
 	constexpr IntAlias(IntAlias&&) noexcept = default;
-	constexpr fn operator=(const IntAlias&) -> IntAlias& = default;
-	constexpr fn operator=(IntAlias&&) noexcept -> IntAlias& = default;
+	constexpr auto operator=(const IntAlias&) -> IntAlias& = default;
+	constexpr auto operator=(IntAlias&&) noexcept -> IntAlias& = default;
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator==(const std::integral auto other) const { return value == other; }
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const std::integral auto other) const { return value == other; }
 
-	template<std::integral Other>
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator==(const IntAlias<Other>& other) const { return value == other.value; }
+	template <std::integral Other>
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const IntAlias<Other>& other) const { return value == other.value; }
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator!=(const std::integral auto other) const { return value != other; }
+	[[nodiscard]] FORCEINLINE constexpr auto operator!=(const std::integral auto other) const { return value != other; }
 
 	template<std::integral Other>
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator!=(const IntAlias<Other>& other) const { return value != other.value; }
+	[[nodiscard]] FORCEINLINE constexpr auto operator!=(const IntAlias<Other>& other) const { return value != other.value; }
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator<=>(const std::integral auto other) const { return value <=> other; }
+	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const std::integral auto other) const { return value <=> other; }
 
 	template<std::integral Other>
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator<=>(const IntAlias<Other>& other) const { return value <=> other.value; }
+	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const IntAlias<Other>& other) const { return value <=> other.value; }
 
 	template<typename Other>
 	requires std::is_arithmetic_v<T>
@@ -469,8 +268,8 @@ struct IntAlias {
 	[[nodiscard]] FORCEINLINE constexpr operator T&() { return value; }
 	[[nodiscard]] FORCEINLINE constexpr operator const T&() const { return value; }
 
-	FORCEINLINE constexpr fn set_value(const T new_value) -> void { value = new_value; }
-	[[nodiscard]] FORCEINLINE constexpr fn get_value() const -> T { return value; }
+	FORCEINLINE constexpr auto set_value(const T new_value) -> void { value = new_value; }
+	[[nodiscard]] FORCEINLINE constexpr auto get_value() const -> T { return value; }
 
 private:
 	T value;
@@ -479,118 +278,85 @@ private:
 namespace std {
 template<std::integral T>
 struct hash<IntAlias<T>> {
-	[[nodiscard]]
-	fn operator()(const IntAlias<T> value) { return std::hash<T>{}(value.get_value()); }
+	[[nodiscard]] FORCEINLINE auto operator()(const IntAlias<T> value) { return std::hash<T>{}(value.get_value()); }
 };
 }
 
-template<typename T>
-struct SparseArray {
-private:
-	struct Uninitialized {
-		alignas(T) u8 buffer[sizeof(T)];
-	};
+template <usize N>
+struct StringLiteral {
+	static constexpr usize COUNT = N;
 
-public:
-	~SparseArray() {
-		initialized_mask.for_each_set_bit([&](const u32 index) {
-			(*this)[index].~T();
-		});
+	consteval StringLiteral(NoInit) {}
+
+	consteval StringLiteral(const char (&str)[N]) {
+		std::copy_n(str, N, value);
 	}
 
-	fn set_min_size(const usize count) -> bool {
-		if (count <= size()) {
+	FORCEINLINE constexpr StringLiteral(const StringLiteral& other) {
+		std::copy_n(other.value, N, value);
+	}
+
+	FORCEINLINE constexpr auto operator=(const StringLiteral& other) -> StringLiteral& {
+		return *new(this) StringLiteral{other};
+	}
+
+	template <usize OtherN>
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const StringLiteral<OtherN>& other) const -> bool {
+		if constexpr (N != OtherN) {
 			return false;
 		}
 
-		array.resize(count);
-	}
-
-	// Inserts an element at the given index. Resizes the array to fit if required.
-	template<typename... Args>
-	fn insert(const usize index, Args&&... args) -> T& {
-		set_min_size(index + 1);
-
-		if (is_initialized(index)) {
-			(*this)[index].~T();
+		if consteval {
+			for (usize i = 0; i < N; ++i) {
+				if (value[i] != other.value[i]) {
+					return false;
+				}
+			}
+			return true;
+		} else {
+			return std::strcmp(value, other.value) == 0;
 		}
-
-		return *new(&(*this)[index]) T{std::forward<Args>(args)...};
 	}
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator[](const std::integral auto index) -> T& {
-		ASSERT(is_initialized(index));
-		return *reinterpret_cast<T*>(array[index].buffer);
+	[[nodiscard]] FORCEINLINE constexpr auto view() const -> StringView {
+		return StringView{value, N};
 	}
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn operator[](const std::integral auto index) const -> const T& {
-		ASSERT(is_initialized(index));
-		return *reinterpret_cast<const T*>(array[index].buffer);
+	[[nodiscard]] FORCEINLINE constexpr operator StringView() const {
+		return view();
 	}
 
-	[[nodiscard]]
-	FORCEINLINE constexpr fn size() const -> usize {
-		ASSERT(array.size() == initialized_mask.size());
-		return array.size();
-	}
-
-	[[nodiscard]]
-	FORCEINLINE constexpr fn is_initialized(const std::integral auto index) const -> bool {
-		return is_valid_index() && initialized_mask[index];
-	}
-
-	[[nodiscard]]
-	FORCEINLINE constexpr fn is_valid_index(const std::integral auto index) const -> bool {
-		return index >= 0 && index < size();
-	}
-
-	[[nodiscard]]
-	FORCEINLINE constexpr fn get_initialized_mask() const -> const BitArray<>& {
-		return initialized_mask;
-	}
-
-private:
-	Array<Uninitialized> array;
-	BitArray<> initialized_mask;
+	char value[N];
 };
 
-template<typename>
-struct FnRef;
+template <typename T, typename M>
+struct MemberPtr {
+	template <typename, typename>
+	friend struct MemberPtr;
 
-// References a function object. Does not do any allocations unlike Fn.
-template<typename Return, typename... Args>
-struct FnRef<Return(Args...)> {
-	constexpr FnRef()
-		: data{nullptr}, func{nullptr} {}
+	constexpr explicit MemberPtr(NoInit) {}
 
-	template<InvokableReturns<Return, Args...> T>
-	FORCEINLINE constexpr FnRef(T&& in_func [[clang::lifetimebound]])
-		:
-		data{(void*)&in_func},
-		func{[](void* data, Args&&... args) -> Return {
-			if constexpr (std::is_same_v<Return, void>) {
-				std::invoke(*static_cast<std::decay_t<T>*>(data), std::forward<Args>(args)...);
-			} else {
-				return std::invoke(*static_cast<std::decay_t<T>*>(data), std::forward<Args>(args)...);
-			}
-		}} {}
+	consteval MemberPtr(const M T::* member)
+		: member{member} {}
 
-	FORCEINLINE constexpr fn operator=(InvokableReturns<Return, Args...> auto&& in_func [[clang::lifetimebound]]) -> FnRef& {
-		return *new(this) FnRef{in_func};
-	}
+	consteval MemberPtr(const MemberPtr&) = default;
+	consteval auto operator=(const MemberPtr&) -> MemberPtr& = default;
 
-	FORCEINLINE constexpr fn operator()(Args... args) const -> Return {
-		ASSERTF(func, "Attempted to invoke FnRef before it's been assigned to any function!");
-		if constexpr (std::is_same_v<Return, void>) {
-			func(data, std::forward<Args>(args)...);
+	const M T::* member;
+
+	using Member = std::decay_t<M>;
+	using Container = std::decay_t<T>;
+
+	template <typename OtherT, typename OtherM>
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const MemberPtr<OtherT, OtherM>& other) const -> bool {
+		if constexpr (!cpts::ExactSame<T, OtherT> || !cpts::ExactSame<M, OtherM>) {
+			return false;
 		} else {
-			return func(data, std::forward<Args>(args)...);
+			return member == other.member;
 		}
 	}
 
-private:
-	void* const data;
-	Return(* const func)(void*, Args&&...);
+	[[nodiscard]] FORCEINLINE constexpr auto get_value_in_container(auto&& container) const -> decltype(auto) requires (std::derived_from<std::decay_t<decltype(container)>, Container>) {
+		return (FORWARD_AUTO(container).*member);
+	}
 };

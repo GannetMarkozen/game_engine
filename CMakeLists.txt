@@ -11,21 +11,34 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Set compile flags for different build configurations.
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g -O2")
 
-# Enable SSE4, disable exceptions, disable RTTI.
+# Variable to enable/disable address sanitizer (only in debug configuration).
+set(ASAN_ENABLED TRUE)
+
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    # Enable SSE4, disable exceptions, disable RTTI.
     add_compile_options(-msse4.1 -msse4.2 -fno-exceptions -fno-rtti)
 
-    # Enable various optimization flags.
+    if (ASAN_ENABLED)
+        # Having either -D_DLL or -D_DEBUG breaks asan in weird ways and is passed in by default (this took me forever to figure out).
+        string(REPLACE "-D_DLL" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+        string(REPLACE "-D_DEBUG" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer")
+        set(CMAKE_EXE_LINKER_FLAGS_DEBUG "-fsanitize=address -fno-omit-frame-pointer")
+    endif()
+
+    # Enable various optimization flags for release.
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto -ftree-vectorize -funroll-loops")
 elseif (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     add_compile_options(/arch:SSE4.2 /EHs-c- /GR-)
 else()
     message(FATAL_ERROR "Unknown compiler ${CMAKE_CXX_COMPILER_ID}!")
 endif()
+
+add_executable(game_engine src/private/main.cpp)
 
 # Configure library definitions.
 add_compile_definitions(
@@ -60,6 +73,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/g-truc/glm.git
     GIT_TAG bf71a834948186f4097caa076cd2663c69a10e1e #refs/tags/1.0.1
 )
+
 FetchContent_Declare(
     flecs
     GIT_REPOSITORY https://github.com/SanderMertens/flecs.git
@@ -83,24 +97,16 @@ set(VULKAN_SDK "$ENV{VULKAN_SDK}")
 link_directories("${VULKAN_SDK}/Lib")
 find_package(Vulkan REQUIRED)
 
-add_executable(game_engine src/private/main.cpp)
-
-# Include public and private folders.
-# Include Vulkan headers library.
 target_include_directories(game_engine
     PUBLIC src/public
     PRIVATE src/private
-    PRIVATE ${VulkanHeaders_SOURCE_DIR}/include
+    #PRIVATE ${VulkanHeaders_SOURCE_DIR}/include
 
     # Add plugins directory.
     PUBLIC plugins
 )
-
 # Plugins.
 add_subdirectory(plugins/core)
-
-add_library(taskflow INTERFACE)
-target_include_directories(taskflow INTERFACE third_party/taskflow-master/taskflow)
 
 target_link_libraries(game_engine
     # Third-party.
@@ -108,6 +114,5 @@ target_link_libraries(game_engine
     PRIVATE flecs_static
 	PRIVATE Vulkan::Vulkan
 
-    # Plugins.
     PRIVATE core
 )
