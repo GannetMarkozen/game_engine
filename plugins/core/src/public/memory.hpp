@@ -4,6 +4,7 @@
 
 namespace mem {
 constexpr usize DEFAULT_ALIGNMENT = 0;
+constexpr usize DEFAULT_ALIGNMENT_SIZE = 8;
 
 static_assert(std::same_as<__underlying_type(std::align_val_t), usize>);
 

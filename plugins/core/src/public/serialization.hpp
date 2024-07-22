@@ -108,3 +108,10 @@ FORCEINLINE constexpr auto serialize_json(std::ostream& stream, const T& value) 
 
 	return stream;
 }
+
+namespace cpts {
+template <typename T>
+concept JsonSerializable = requires {
+	{ serialize_json(std::declval<std::ostream&>(), std::declval<const T&>()) } -> std::same_as<std::ostream&>;
+};
+}

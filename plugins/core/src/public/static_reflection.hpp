@@ -863,3 +863,10 @@ struct Reflect<Pair<T1, T2>> {
 		Member<"second", &Pair<T1, T2>::second>
 	>;
 };
+
+template <cpts::ReflectedMembers T>
+struct IsTriviallyRelocatable<T> {
+	static constexpr bool VALUE = meta::make_reflected_members_param_pack<T>([]<cpts::Member... Members>() consteval -> bool {
+		return (cpts::TriviallyRelocatable<typename Members::MemberType> && ...);
+	});
+};

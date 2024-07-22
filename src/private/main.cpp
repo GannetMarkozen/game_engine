@@ -40,6 +40,10 @@ struct Reflect<SomeOtherStruct> {
 	>;
 };
 
+struct alignas(CACHE_LINE_SIZE) Number {
+	i32 number;
+};
+
 struct SomeStruct : public SomeParentStruct {
 	f32 member = 10;
 	i32 value = 999;
@@ -51,9 +55,9 @@ struct Reflect<SomeStruct> {
 	using Parent = SomeParentStruct;
 
 	using Members = Members<
-		DECLARE_MEMBER(&SomeStruct::member),
-		DECLARE_MEMBER(&SomeStruct::value),
-		DECLARE_MEMBER(&SomeStruct::map)
+		DECLARE_MEMBER(&SomeStruct::member, "Attr"),
+		DECLARE_MEMBER(&SomeStruct::value, {"AttributeWithValue", Number{10}}, {"Fortnite", Number{69}}),
+		DECLARE_MEMBER(&SomeStruct::map, "SomeRandomAttribute")
 	>;
 };
 
@@ -67,53 +71,18 @@ struct Reflect<SomeStruct> {
 
 #include "rtti.hpp"
 
+namespace some_int_namespace_int {
+	template <typename T>
+	struct SomeType {};
+}
+
 auto main() -> int {
-	#if 0
-	std::ostringstream stream;
-
-	serialize_json(stream, SomeStruct{});
-
-	fmt::print(fmt::fg(fmt::color::yellow), "{}\n", stream.str());
-
-	std::this_thread::sleep_for(std::chrono::seconds{2});
-	#endif
-
-#if 0
-	const auto start = std::chrono::high_resolution_clock::now();
-
-	task::init();
-
-	volatile bool request_exit = false;
-
-	std::atomic<u32> count = 0;
-	task::enqueue([&] {
-		task::parallel_for(100, [&](const usize i) {
-			for (usize j = 0; j < 1000; ++j) {
-				task::parallel_for(1000, [&](const usize i) { ++count; });
-			}
-			fmt::println("Finished loop {}: {}", i, count.load(std::memory_order_relaxed));
-		});
-
-		request_exit = true;
-	}, task::Priority::NORMAL, task::Thread::MAIN);
-
-	task::do_work([&] { return request_exit; });
-
-	const auto end = std::chrono::high_resolution_clock::now();
-
-	fmt::println("Exiting. Time == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
-
-	std::this_thread::sleep_for(std::chrono::seconds{2});
-
-	task::deinit();
-	#endif
-
-	Any something = Any::make<Array<i32>>(Array<i32>{10, 20, 30});
-	Any something_else = something;
-
-	const auto& value = something_else.as<Array<i32>>();
-	for (usize i = 0; i < value.size(); ++i) {
-		fmt::println("something_else[{}] == {}", i, value[i]);
+	const auto& type_info = rtti::get_type_info<SomeStruct>();
+	for (const auto& member : type_info.members) {
+		fmt::println("{} {}: {}", member.type->name, member.name, member.offset);
+		for (const auto& attribute : member.attributes) {
+			fmt::println("\t{} {}: {}", attribute.value.get_type()->name, attribute.name, static_cast<const Number*>(attribute.value.get_data())->number);
+		}
 	}
 
 	return EXIT_SUCCESS;

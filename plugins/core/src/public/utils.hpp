@@ -39,7 +39,73 @@ template <typename T>
 }
 
 namespace impl {
+constexpr StringView TYPE_NAME_REDIRECTS[][2] = {
+	{"std::vector", "Array"},
+	{"std::array", "StaticArray"},
+	{"std::span", "Span"},
+	{"std::unordered_map", "Map"},
+	{"std::unordered_set", "Set"},
+	{"std::optional", "Optional"},
+	{"std::pair", "Pair"},
+	{"std::basic_string<char>", "String"},
+	{"std::basic_string_view<char>", "StringView"},
+	{"std::variant", "Variant"},
+	{"std::unique_ptr", "UniquePtr"},
+	{"std::shared_ptr", "SharedPtr"},
+	{"std::weak_ptr", "WeakPtr"},
+	{"unsigned long long", "u64"},
+	{"unsigned long", "u32"},
+	{"unsigned int", "u32"},
+	{"unsigned short", "u16"},
+	{"unsigned char", "u8"},
+	{"unsigned", "u32"},
+	{"long long", "i64"},
+	{"long", "i32"},
+	{"int", "i32"},
+	{"short", "i16"},
+	{"char", "i8"},
+	{"float", "f32"},
+	{"double", "f64"},
+};
 
+constexpr StringView SYMBOL_REDIRECTS[][2] = {
+	{" &", "&"},
+	{" *", "*"},
+};
+
+constexpr StringView TYPE_DELIMITER_CHARS{"<>: *&,"};
+
+template <typename T>
+struct TypeNameInstantiator {
+	EXPORT_API inline static const String VALUE = [] {
+		auto name = String{get_raw_type_name<T>()};
+		for (const auto& [redirect_from, redirect_to] : TYPE_NAME_REDIRECTS) {
+			usize current_position = 0;
+			while ((current_position = name.find(redirect_from, current_position)) != String::npos) {
+				if ((current_position == 0 || TYPE_DELIMITER_CHARS.contains(name[current_position - 1]) &&
+					(current_position == name.size() || TYPE_DELIMITER_CHARS.contains(name[current_position + redirect_from.size()])))) {
+					name.replace(current_position, redirect_from.size(), redirect_to);
+				} else {
+					current_position += redirect_from.size();
+				}
+			}
+		}
+
+		for (const auto& [redirect_from, redirect_to] : impl::SYMBOL_REDIRECTS) {
+			usize current_position = 0;
+			while ((current_position = name.find(redirect_from, current_position)) != String::npos) {
+				name.replace(current_position, redirect_from.size(), redirect_to);
+			}
+		}
+
+		return name;
+	}();
+};
+}
+
+template <typename T>
+[[nodiscard]] FORCEINLINE auto get_type_name() -> StringView {
+	return StringView{impl::TypeNameInstantiator<T>::VALUE};
 }
 
 template <typename>

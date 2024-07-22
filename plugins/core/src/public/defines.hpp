@@ -117,12 +117,21 @@ enum NoInit { NO_INIT };
 
 namespace cpts {
 template <typename T>
+concept Struct = std::is_class_v<T>;
+
+template <typename T>
+concept Class = std::is_class_v<T>;
+
+template <typename T>
 concept Enum = std::is_enum_v<T>;
 
 template <typename T>
 concept EnumWithCount = requires {
 	{ T::COUNT } -> std::same_as<T>;
 } && Enum<T>;
+
+template <typename T>
+concept Fundamental = std::is_fundamental_v<T>;
 
 template <typename T>
 concept Pointer = std::is_pointer_v<T>;
