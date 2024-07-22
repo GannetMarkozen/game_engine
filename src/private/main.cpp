@@ -77,13 +77,6 @@ namespace some_int_namespace_int {
 }
 
 auto main() -> int {
-	const auto& type_info = rtti::get_type_info<SomeStruct>();
-	for (const auto& member : type_info.members) {
-		fmt::println("{} {}: {}", member.type->name, member.name, member.offset);
-		for (const auto& attribute : member.attributes) {
-			fmt::println("\t{} {}: {}", attribute.value.get_type()->name, attribute.name, static_cast<const Number*>(attribute.value.get_data())->number);
-		}
-	}
-
+	
 	return EXIT_SUCCESS;
 }
