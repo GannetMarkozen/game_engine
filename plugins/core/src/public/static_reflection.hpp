@@ -628,7 +628,7 @@ struct Attribute {
 		: name{name}, value{std::forward<T>(value)} {}
 
 	using ValueType = T;
-	static constexpr bool HAS_VALUE = !cpts::Same<T, std::nullptr_t>;
+	static constexpr bool HAS_VALUE = !std::same_as<std::decay_t<T>, std::nullptr_t>;
 
 	StringLiteral<N> name;
 	T value;

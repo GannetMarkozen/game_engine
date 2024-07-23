@@ -104,6 +104,9 @@ struct BitMask {
 	template <usize, std::unsigned_integral>
 	friend struct BitMask;
 
+	template <typename>
+	friend struct std::hash;
+
 	using WordType = Word;
 	static constexpr usize WORD_BITS = sizeof(Word) * 8;
 
@@ -124,6 +127,26 @@ struct BitMask {
 
 	constexpr BitMask(const BitMask&) = default;
 	constexpr auto operator=(const BitMask&) -> BitMask& = default;
+
+	template <usize OTHER_N>
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const BitMask<OTHER_N, Word>& other) const -> bool {
+		static constexpr usize OTHER_WORD_COUNT = std::decay_t<decltype(other)>::WORD_COUNT;
+		#pragma unroll
+		for (usize i = 0; i < std::min(WORD_COUNT, OTHER_WORD_COUNT); ++i) {
+			if (data[i] != other.data[i]) {
+				return false;
+			}
+		}
+		if constexpr (OTHER_WORD_COUNT > WORD_COUNT) {
+			#pragma once
+			for (usize i = WORD_COUNT; i < OTHER_WORD_COUNT; ++i) {
+				if (other.data[i] != 0) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto get_data(this auto&& self) {
 		return &self.data[0];
@@ -252,6 +275,15 @@ struct BitMask {
 		}
 	}
 
+	[[nodiscard]] FORCEINLINE constexpr auto hash() const -> usize {
+		usize hash = std::hash<Word>{}(data[0]);
+		#pragma unroll
+		for (usize i = 1; i < WORD_COUNT; ++i) {
+			hash = math::hash_combine(hash, std::hash<Word>{}(data[i]));
+		}
+		return hash;
+	}
+
 private:
 	// No-op if there are no extraneous bits.
 	FORCEINLINE constexpr auto zero_extraneous_bits() -> void {
@@ -289,4 +321,13 @@ template <std::unsigned_integral Word, usize N1, usize N2>
 	} else {
 		return auto{b} ^= a;
 	}
+}
+
+namespace std {
+template <usize N, std::unsigned_integral Word>
+struct hash<BitMask<N, Word>> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const BitMask<N, Word>& value) const -> usize {
+		return value.hash();
+	}
+};
 }

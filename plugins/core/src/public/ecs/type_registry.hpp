@@ -1,27 +1,126 @@
 #pragma once
 
-#include "defines.hpp"
+#include "types.hpp"
+#include "rtti.hpp"
+#include "bitmask.hpp"
 
-namespace ecs {
-namespace impl {
-template <typename Tag, std::integral Int>
-struct TypeRegistryIncrementer {
-	[[nodiscard]] FORCEINLINE static auto increment() -> Int {
-		return incrementer++;
-	}
-
-private:
-	EXPORT_API inline static constinit Int incrementer = 0;
-};
+namespace cpts {
+template <typename T>
+concept U16IntAlias = std::derived_from<T, IntAlias<u16>> && !std::same_as<T, IntAlias<u16>>;
 }
 
-template <typename T, typename Tag = std::nullptr_t, std::integral Int = u16>
+namespace ecs {
+template <cpts::U16IntAlias IdType>
 struct TypeRegistry {
-	[[nodiscard]] FORCEINLINE static auto get() -> Int {
-		return VALUE;
-	}
+	EXPORT_API inline static Array<const rtti::TypeInfo*> TYPE_INFOS;
 
 private:
-	EXPORT_API inline static const Int VALUE = impl::TypeRegistryIncrementer<Tag, Int>::increment();
+	template <typename T>
+	struct TypeInstantiator {
+		EXPORT_API inline static const IdType ID = [] {
+			const usize index = TYPE_INFOS.size();
+			ASSERTF(index < UINT16_MAX, "TypeRegistry for type {} has exceeded {} registered types!", utils::get_type_name<T>(), UINT16_MAX);
+			TYPE_INFOS.push_back(&rtti::get_type_info<T>());
+			return IdType{static_cast<u16>(index)};
+		}();
+	};
+
+public:
+	template <typename T>
+	[[nodiscard]] FORCEINLINE static auto get_id() -> IdType {
+		return TypeInstantiator<T>::ID;
+	}
+
+	[[nodiscard]] FORCEINLINE static auto get_type_info(const IdType id) -> const rtti::TypeInfo& {
+		return *TYPE_INFOS[id.get_value()];
+	}
+
+	[[nodiscard]] FORCEINLINE static auto get_num_registered_types() -> usize {
+		return TYPE_INFOS.size();
+	}
+};
+
+template <cpts::U16IntAlias IdType, usize N, std::unsigned_integral Word = SizedUnsignedIntegral<N>>
+struct TypeMask {
+	using TypeRegistry = TypeRegistry<IdType>;
+
+	template <typename... Ts>
+	[[nodiscard]] FORCEINLINE static auto make() -> TypeMask {
+		TypeMask out;
+		(out.add<Ts>(), ...);
+		return out;
+	}
+
+	FORCEINLINE constexpr auto add(const IdType id) -> TypeMask& {
+		mask[id.get_value()] = true;
+		return *this;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto has(const IdType id) const -> bool {
+		return mask[id.get_value()];
+	}
+
+	template <typename T>
+	FORCEINLINE auto add() -> TypeMask& {
+		return add(TypeRegistry::template get_id<T>());
+	}
+
+	template <typename T>
+	FORCEINLINE auto has() const -> bool {
+		return has(TypeRegistry::template get_id<T>());
+	}
+
+	FORCEINLINE constexpr auto for_each(cpts::Invokable<IdType> auto&& fn) const -> void {
+		mask.for_each_set_bit([&](const usize i) {
+			std::invoke(fn, IdType{static_cast<u16>(i)});
+		});
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const TypeMask& other) const -> bool {
+		return mask == other.mask;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator&=(const TypeMask& other) -> TypeMask& {
+		mask &= other.mask;
+		return *this;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator|=(const TypeMask& other) -> TypeMask& {
+		mask |= other.mask;
+		return *this;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator^=(const TypeMask& other) -> TypeMask& {
+		mask ^= other.mask;
+		return *this;
+	}
+
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator&(const TypeMask& a, const TypeMask& b) -> TypeMask {
+		return auto{a} &= b;
+	}
+
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator|(const TypeMask& a, const TypeMask& b) -> TypeMask {
+		return auto{a} |= b;
+	}
+
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator^(const TypeMask& a, const TypeMask& b) -> TypeMask {
+		return auto{a} ^= b;
+	}
+
+	BitMask<N, Word> mask;
+};
+
+template <cpts::U16IntAlias T>
+[[nodiscard]] FORCEINLINE auto get_type_info(const T id) -> const rtti::TypeInfo& {
+	return TypeRegistry<T>::get_type_info(id);
+}
+}
+
+namespace std {
+template <cpts::U16IntAlias T, usize N, std::unsigned_integral Word>
+struct hash<ecs::TypeMask<T, N, Word>> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::TypeMask<T, N, Word>& value) const -> usize {
+		return value.mask.hash();
+	}
 };
 }

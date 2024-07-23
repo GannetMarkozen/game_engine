@@ -101,6 +101,7 @@ using i32 = int32_t;
 using u32 = uint32_t;
 using i64 = int64_t;
 using u64 = uint64_t;
+using isize = std::make_signed_t<size_t>;
 using usize = size_t;
 using uptr = uintptr_t;
 

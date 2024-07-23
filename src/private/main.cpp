@@ -66,17 +66,53 @@ struct Reflect<SomeStruct> {
 #include <thread>
 #include "serialization.hpp"
 
-#include "threading/task.hpp"
-#include "ecs/component.hpp"
-
-#include "rtti.hpp"
+#include "ecs/archetype.hpp"
 
 namespace some_int_namespace_int {
 	template <typename T>
 	struct SomeType {};
 }
 
+struct alignas(CACHE_LINE_SIZE) TestStruct {
+	u8 data[CACHE_LINE_SIZE];
+
+	static inline i32 constructed_counter = 0;
+	static inline i32 destructed_counter = 0;
+
+	TestStruct() {
+		++constructed_counter;
+	}
+
+	TestStruct(TestStruct&& other) noexcept {
+		++constructed_counter;
+	}
+
+	~TestStruct() {
+		++destructed_counter;
+	}
+};
+
+template <>
+struct IsTriviallyRelocatable<TestStruct> {
+	static constexpr bool VALUE = true;
+};
+
 auto main() -> int {
-	
+	using namespace ecs;
+
+	usize num_entities_per_chunk;
+	{
+		Archetype archetype{ArchetypeDesc{.comps = CompMask::make<SomeStruct, SomeOtherStruct, u8, TestStruct, bool>()}};
+		archetype.add_defaulted_entities(404 * 10);
+		//archetype.remove(10, 10);
+		//archetype.remove_from_end(405);
+		archetype.remove_at(0, 404 + 1);
+		num_entities_per_chunk = archetype.num_entities_per_chunk;
+	}
+
+	fmt::println("Constructed == {}. Destructed == {}", TestStruct::constructed_counter, TestStruct::destructed_counter);
+
+	fmt::println("num per chunk == {}", num_entities_per_chunk);
+
 	return EXIT_SUCCESS;
 }

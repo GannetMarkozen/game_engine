@@ -71,6 +71,13 @@ private:
 	Return(*fn)(void*, Params...);
 };
 
+namespace cpts {
+template <typename T>
+concept Hashable = requires (const T t) {
+	{ std::hash<T>{}(t) } -> std::same_as<usize>;
+};
+}
+
 namespace utils {
 template <typename... Ts>
 [[nodiscard]] consteval auto contains_type_by_predicate(auto&& fn) -> bool {
@@ -101,14 +108,6 @@ template <typename T, typename Member>
 [[nodiscard]] auto get_member_offset(const Member T::* member) -> usize {
 	return reinterpret_cast<usize>(&(static_cast<T*>(null)->*member));
 }
-}
-
-namespace cpts {
-template <typename T1, typename T2>
-concept ExactSame = std::same_as<T1, T2>;
-
-template <typename T1, typename T2>
-concept Same = ExactSame<std::decay_t<T1>, std::decay_t<T2>>;
 }
 
 namespace utils {
@@ -283,6 +282,48 @@ struct IntAlias {
 	template<std::integral Other>
 	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const IntAlias<Other>& other) const { return value <=> other.value; }
 
+	FORCEINLINE constexpr auto operator+=(const std::integral auto other) -> IntAlias& {
+		value += other;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator-=(const std::integral auto other) -> IntAlias& {
+		value -= other;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator*=(const std::integral auto other) -> IntAlias& {
+		value *= other;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator/=(const std::integral auto other) -> IntAlias& {
+		value /= other;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator++() -> IntAlias& {
+		++value;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator++(int) -> IntAlias {
+		IntAlias old = *this;
+		++*this;
+		return old;
+	}
+
+	FORCEINLINE constexpr auto operator--() -> IntAlias& {
+		--value;
+		return *this;
+	}
+
+	FORCEINLINE constexpr auto operator--(int) -> IntAlias {
+		IntAlias old = *this;
+		--*this;
+		return old;
+	}
+
 	template<typename Other>
 	requires std::is_arithmetic_v<T>
 	[[nodiscard]]
@@ -376,7 +417,7 @@ struct MemberPtr {
 
 	template <typename OtherT, typename OtherM>
 	[[nodiscard]] FORCEINLINE constexpr auto operator==(const MemberPtr<OtherT, OtherM>& other) const -> bool {
-		if constexpr (!cpts::ExactSame<T, OtherT> || !cpts::ExactSame<M, OtherM>) {
+		if constexpr (!std::same_as<T, OtherT> || !std::same_as<M, OtherM>) {
 			return false;
 		} else {
 			return member == other.member;

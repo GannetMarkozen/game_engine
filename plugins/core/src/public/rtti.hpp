@@ -128,7 +128,7 @@ struct Attribute {
 struct Member {
 	StringView name;
 	usize offset;
-	const TypeInfo* type;
+	const TypeInfo& type;
 	Array<Attribute> attributes;
 };
 
@@ -137,7 +137,7 @@ struct Entry {
 	i64 value;
 };
 
-struct alignas(CACHE_LINE_SIZE) TypeInfo {
+struct TypeInfo {
 	StringView name;
 	usize size, alignment, alloc_alignment;
 	Flags flags;
@@ -148,11 +148,12 @@ struct alignas(CACHE_LINE_SIZE) TypeInfo {
 	void(*move_construct)(void*, void*, usize);
 	void(*copy_assign)(void*, const void*, usize);
 	void(*move_assign)(void*, void*, usize);
+	void(*relocate_occupied)(void*, void*, usize);// Merges destruction of source region and relocation of src region. Assumes no overlap.
 	void(*destruct)(void*, usize);
 	bool(*equals)(const void*, const void*);
 	usize(*hash)(const void*);
 
-	const TypeInfo* parent;
+	const TypeInfo* parent;// Potentially NULL.
 	Array<Attribute> attributes;
 	Array<Member> members;
 	Array<Entry> entries;
@@ -246,6 +247,26 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 			UNIMPLEMENTED;
 		}
 	},
+	.relocate_occupied = [](void* dst, void* src, const usize count) {
+		if constexpr (cpts::TriviallyRelocatable<T>) {
+			if constexpr (std::is_trivially_destructible_v<T>) {
+				memcpy(dst, src, count * sizeof(T));
+			} else {
+				for (usize i = 0; i < count; ++i) {
+					static_cast<T*>(dst)[i].~T();
+					memcpy(&static_cast<T*>(dst)[i], &static_cast<T*>(src)[i], sizeof(T));
+				}
+			}
+		} else if constexpr (std::is_move_constructible_v<T>) {
+			for (usize i = 0; i < count; ++i) {
+				static_cast<T*>(dst)[i].~T();
+				std::construct_at(&static_cast<T*>(dst)[i], std::move(static_cast<T*>(src)[i]));
+				static_cast<T*>(src)[i].~T();
+			}
+		} else {
+			UNIMPLEMENTED;
+		}
+	},
 	.destruct = [](void* dst, const usize count) {
 		if constexpr (std::is_destructible_v<T> && !std::is_trivially_destructible_v<T>) {
 			for (usize i = 0; i < count; ++i) {
@@ -299,7 +320,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 				(members.push_back(Member{
 					.name = Members::NAME.view(),
 					.offset = Members::MEMBER.get_offset(),
-					.type = &get_type_info<typename Members::MemberType>(),
+					.type = get_type_info<typename Members::MemberType>(),
 					.attributes = [] {
 						Array<Attribute> out;
 						out.reserve(Members::ATTRIBUTES.count());

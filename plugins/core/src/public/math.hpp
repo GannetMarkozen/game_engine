@@ -20,7 +20,7 @@ namespace math {
 	return reinterpret_cast<uptr>(value);
 }
 
-template<typename T> requires std::is_arithmetic_v<T>
+template <typename T> requires std::is_arithmetic_v<T>
 [[nodiscard]] FORCEINLINE constexpr auto truncate(const std::floating_point auto value) -> T {
 	if constexpr (std::is_floating_point_v<T>) {
 		if consteval {
@@ -33,7 +33,7 @@ template<typename T> requires std::is_arithmetic_v<T>
 	}
 }
 
-template<typename T = i32> requires std::is_arithmetic_v<T>
+template <typename T = i32> requires std::is_arithmetic_v<T>
 [[nodiscard]] FORCEINLINE constexpr auto floor(const std::floating_point auto value) -> T {
 	if constexpr (std::is_floating_point_v<T> && std::is_floating_point_v<decltype(value)> && !std::is_constant_evaluated()) {
 		return ::floor(value);
@@ -44,7 +44,7 @@ template<typename T = i32> requires std::is_arithmetic_v<T>
 	return trunc_value;
 }
 
-template<typename T = i32> requires std::is_arithmetic_v<T>
+template <typename T = i32> requires std::is_arithmetic_v<T>
 [[nodiscard]] FORCEINLINE constexpr auto ceil(const std::floating_point auto value) -> T {
 	if constexpr (std::is_floating_point_v<T> && std::is_floating_point_v<decltype(value)> && !std::is_constant_evaluated()) {
 		return ::ceil(value);
@@ -55,7 +55,7 @@ template<typename T = i32> requires std::is_arithmetic_v<T>
 	return trunc_value;
 }
 
-template<typename T = i32> requires std::is_arithmetic_v<T>
+template <typename T = i32> requires std::is_arithmetic_v<T>
 [[nodiscard]] FORCEINLINE constexpr auto round(const std::floating_point auto value) -> T {
 	if constexpr (std::is_floating_point_v<T> && std::is_floating_point_v<decltype(value)> && !std::is_constant_evaluated()) {
 		return ::round(value);
@@ -112,20 +112,8 @@ template<typename T = i32> requires std::is_arithmetic_v<T>
 	return align(value, alignment) == value;
 }
 
-[[nodiscard]] FORCEINLINE constexpr auto hash_combine(u32 a, u32 b) -> u32 {
-	u32 c = 0x9e3779b9;
-	a += c;
-
-	a -= c; a -= b; a ^= (b>>13);
-	c -= b; c -= a; c ^= (a<<8);
-	b -= a; b -= c; b ^= (c>>13);
-	a -= c; a -= b; a ^= (b>>12);
-	c -= b; c -= a; c ^= (a<<16);
-	b -= a; b -= c; b ^= (c>>5);
-	a -= c; a -= b; a ^= (b>>3);
-	c -= b; c -= a; c ^= (a<<10);
-	b -= a; b -= c; b ^= (c>>15);
-
-	return b;
+// @NOTE: Taken from boost.
+[[nodiscard]] FORCEINLINE constexpr auto hash_combine(const usize a, const usize b) -> usize {
+	return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2));
 }
 }
