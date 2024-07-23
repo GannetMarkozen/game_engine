@@ -1,4 +1,5 @@
 #include "core_include.hpp"
+#include "defines.hpp"
 #include "static_reflection.hpp"
 #include "types.hpp"
 #include "utils.hpp"
@@ -103,11 +104,26 @@ auto main() -> int {
 	usize num_entities_per_chunk;
 	{
 		Archetype archetype{ArchetypeDesc{.comps = CompMask::make<SomeStruct, SomeOtherStruct, u8, TestStruct, bool>()}};
-		archetype.add_defaulted_entities(404 * 10);
-		//archetype.remove(10, 10);
-		//archetype.remove_from_end(405);
-		archetype.remove_at(0, 404 + 1);
+		//archetype.add_defaulted_entities(404 * 10);
+
+		Array<Entity> entities;
+		for (u32 i = 0; i < 1000; ++i) {
+			entities.push_back(Entity{i, 69});
+		}
+
+		archetype.add_defaulted_entities(entities);
+		//archetype.remove_at(0, 1);
 		num_entities_per_chunk = archetype.num_entities_per_chunk;
+
+		usize count = 0;
+		archetype.for_each<SomeStruct>([&](const Entity& entity, const SomeStruct& some_struct) {
+			std::ostringstream stream;
+			serialize_json(stream, some_struct);
+
+			fmt::println("[{}]: Entity {} {}\n{}", ++count, entity.get_index(), entity.get_version(), stream.str());
+		});
+
+		archetype.remove_at(100, 520);
 	}
 
 	fmt::println("Constructed == {}. Destructed == {}", TestStruct::constructed_counter, TestStruct::destructed_counter);

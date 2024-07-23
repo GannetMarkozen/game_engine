@@ -74,7 +74,6 @@ auto Archetype::add_uninitialized_entities(const usize count) -> usize {
 	const usize add_num_chunks = num_chunks - old_num_chunks;
 
 	if (add_num_chunks > 0 && num_chunks > 1) [[unlikely]] {
-		fmt::println("CREATING NEW CHUNK!");
 		Chunk* chunk = &get_chunk(std::max<isize>(static_cast<isize>(old_num_chunks) - 1, 0));
 		for (usize i = 0; i < add_num_chunks; ++i) {
 			chunk->next = std::make_unique<Chunk>();

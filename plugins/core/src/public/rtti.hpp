@@ -148,7 +148,7 @@ struct TypeInfo {
 	void(*move_construct)(void*, void*, usize);
 	void(*copy_assign)(void*, const void*, usize);
 	void(*move_assign)(void*, void*, usize);
-	void(*relocate_occupied)(void*, void*, usize);// Merges destruction of source region and relocation of src region. Assumes no overlap.
+	void(*relocate_occupied)(void*, void*, usize);// Merges destruction of dst region and relocation of src region. Assumes no memory overlap.
 	void(*destruct)(void*, usize);
 	bool(*equals)(const void*, const void*);
 	usize(*hash)(const void*);
