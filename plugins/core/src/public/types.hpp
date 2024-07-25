@@ -71,6 +71,19 @@ private:
 	Return(*fn)(void*, Params...);
 };
 
+enum NullOptional {
+	NULL_OPTIONAL
+};
+
+template <typename T>
+struct Optional : public std::optional<T> {
+	using Super = std::optional<T>;
+	using Super::Super;
+
+	constexpr Optional(NullOptional)
+		: Super{} {}
+};
+
 namespace cpts {
 template <typename T>
 concept Hashable = requires (const T t) {
@@ -140,7 +153,7 @@ using TypeAtIndexInContainer = typename impl::TypeAtIndexInContainer<I, Containe
 }
 
 template <typename... Ts>
-struct Tuple;
+using Tuple = std::tuple<Ts...>;
 
 namespace cpts {
 namespace impl {
@@ -156,90 +169,6 @@ struct IsTuple<Container<Ts...>> {
 template <typename T>
 concept IsTuple = impl::IsTuple<T>::VALUE;
 }
-
-template <typename T, typename... Ts>
-struct Tuple<T, Ts...> {
-	template <typename...>
-	friend struct Tuple;
-
-	static constexpr usize COUNT = sizeof...(Ts) + 1;
-
-	[[nodiscard]] FORCEINLINE constexpr Tuple() = default;
-	[[nodiscard]] FORCEINLINE constexpr explicit Tuple(NoInit)
-		: value{NO_INIT}, next{NO_INIT} {}
-
-	template <typename Arg, typename... Args> requires (std::constructible_from<Arg, T> && sizeof...(Ts) == sizeof...(Args))
-	[[nodiscard]] FORCEINLINE constexpr explicit Tuple(Arg&& arg, Args&&... args)
-		: value{std::forward<Arg>(arg)}, next{std::forward<Args>(args)...} {}
-
-	template <template <typename...> typename Container, typename Other, typename... Others>
-	requires (cpts::IsTuple<Container<Other, Others...>> && std::assignable_from<Other, T> && sizeof...(Ts) == sizeof...(Others))
-	FORCEINLINE constexpr auto operator=(Container<Other, Others...>&& tuple) -> Tuple& {
-		value = std::forward<Other>(tuple.value);
-		next = std::forward<Container<Other, Others...>>(tuple);
-		return *this;
-	}
-
-	template <typename Other, typename... Others> requires (sizeof...(Ts) == sizeof...(Others))
-	FORCEINLINE constexpr auto operator==(const Tuple<Other, Others...>& other) const -> bool {
-		return value == other.value && next == other.next;
-	}
-
-	template <usize I, typename Self> requires (I < sizeof...(Ts) + 1)
-	[[nodiscard]] FORCEINLINE constexpr auto get(this Self&& self) -> decltype(auto) {
-		if constexpr (I == 0) {
-			return (std::forward<Self>(self).value);
-		} else {
-			return std::forward<Self>(self).next.template get<I - 1>();
-		}
-	}
-
-	template <usize I, typename Self> requires (std::same_as<std::decay_t<Self>, Tuple>)
-	[[nodiscard]] FORCEINLINE friend constexpr auto get(Self&& self) -> decltype(auto) {
-		return std::forward<Self>(self).template get<I>();
-	}
-
-	template <typename Self>
-	FORCEINLINE constexpr auto visit(this Self&& self, auto&& fn) -> void {
-		std::invoke(fn, std::forward_like<Self>(self.value));
-		if constexpr (sizeof...(Ts) > 0) {
-			std::forward_like<Self>(self.next).visit(FORWARD_AUTO(fn));
-		}
-	}
-
-	consteval auto count() const -> usize {
-		return COUNT;
-	}
-
-	template <usize I>
-	using TypeAtIndex = utils::TypeAtIndex<I, T, Ts...>;
-
-private:
-	T value;
-	[[msvc::no_unique_address]] Tuple<Ts...> next;
-};
-
-template <>
-struct Tuple<> {
-	static constexpr usize COUNT = 0;
-	consteval auto count() const -> usize {
-		return 0;
-	}
-
-	FORCEINLINE constexpr auto visit(this auto&& self, auto&& fn) -> void {}
-};
-
-static_assert(sizeof(u32) == sizeof(Tuple<u32>), "[[no_unique_address]] attribute failed!");
-
-//~ Support for structured bindings.
-template <typename... Ts>
-struct std::tuple_size<Tuple<Ts...>> : std::integral_constant<usize, sizeof...(Ts)> {};
-
-template <usize I, typename... Ts>
-struct std::tuple_element<I, Tuple<Ts...>> {
-	using type = Tuple<Ts...>::template TypeAtIndex<I>;
-};
-//~
 
 namespace utils {
 template <typename... Args>

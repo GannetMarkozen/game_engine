@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.hpp"
+#include "types.hpp"
 
 struct Entity {
 	constexpr Entity(const Entity&) = default;
@@ -52,3 +53,15 @@ constexpr Entity NULL_ENTITY{};
 
 static_assert(sizeof(Entity) == sizeof(u64));
 static_assert(alignof(Entity) == alignof(u64));
+
+template <>
+struct fmt::formatter<Entity> {
+	constexpr auto parse(fmt::format_parse_context& context) {
+		return context.begin();
+	}
+
+	template <typename FmtContext>
+	auto format(const Entity entity, FmtContext& context) {
+		return fmt::format_to(context.out(), "index: {}, version: {}", entity.get_index(), entity.get_version());
+	}
+};

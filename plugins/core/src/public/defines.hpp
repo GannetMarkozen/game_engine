@@ -26,14 +26,14 @@
 #define COMPILER_CLANG 0
 #define COMPILER_GCC 1
 #define COMPILER_MSVC 0
-#define COMPILER_NAME "GNU GCC"
+#define COMPILER_NAME "GCC"
 
 #elif defined(_MSC_VER)
 
 #define COMPILER_CLANG 0
 #define COMPILER_GCC 0
 #define COMPILER_MSVC 1
-#define COMPILER_NAME "Microsoft Visual Studio"
+#define COMPILER_NAME "MSVC"
 
 #else
 

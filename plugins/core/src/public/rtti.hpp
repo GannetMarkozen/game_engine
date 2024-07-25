@@ -105,11 +105,12 @@ namespace rtti {
 enum class Flags : u8 {
 	NONE = 0,
 	TRIVIAL = 1 << 0,
-	TRIVIALLY_RELOCATABLE = 1 << 1,
+	TRIVIALLY_RELOCATABLE = 1 << 1,// Whether this type can be memcpy'd into a new destination (instead of move constructed then destructed).
 	EQUALITY_COMPARABLE = 1 << 2,
 	HASHABLE = 1 << 3,
 	SERIALIZABLE = 1 << 4,
-	REFLECTED = 1 << 5,
+	REFLECTED = 1 << 5,// Has any reflected properties.
+	EMPTY = 1 << 6,// No members.
 };
 }
 
@@ -173,6 +174,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 		if constexpr (cpts::JsonSerializable<T>) out |= Flags::SERIALIZABLE;
 		if constexpr (requires { { std::hash<T>{}(std::declval<const T>()) } -> std::same_as<usize>; }) out |= Flags::HASHABLE;
 		if constexpr (cpts::Reflected<T>) out |= Flags::REFLECTED;
+		if constexpr (std::is_empty_v<T>) out |= Flags::EMPTY;
 		return out;
 	}(),
 	.type = []() -> Type {
@@ -303,7 +305,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 		if constexpr (cpts::ReflectedAttributes<T>) {
 			const auto& attributes = Reflect<T>::Attributes::ATTRIBUTES;
 			out.reserve(attributes.count());
-			attributes.visit([&]<usize N, typename ValueType>(const ::Attribute<N, ValueType>& attribute) {
+			attributes([&]<usize N, typename ValueType>(const ::Attribute<N, ValueType>& attribute) {
 				out.push_back(Attribute{
 					.name = attribute.name.view(),
 					.value{attribute.value},
@@ -323,8 +325,8 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 					.type = get_type_info<typename Members::MemberType>(),
 					.attributes = [] {
 						Array<Attribute> out;
-						out.reserve(Members::ATTRIBUTES.count());
-						Members::ATTRIBUTES.visit([&]<usize N, typename ValueType>(const ::Attribute<N, ValueType>& attribute) {
+						out.reserve(utils::count<decltype(Members::ATTRIBUTES)>());
+						utils::visit(Members::ATTRIBUTES, [&]<usize N, typename ValueType>(const ::Attribute<N, ValueType>& attribute) {
 							out.push_back(Attribute{
 								.name = attribute.name.view(),
 								.value{attribute.value},

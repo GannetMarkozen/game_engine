@@ -2,15 +2,15 @@
 
 #include "types.hpp"
 #include "concepts.hpp"
-#include "registered_types.hpp"
+#include "ids.hpp"
 #include "entity.hpp"
 
 namespace ecs {
-struct ArchetypeId final : public IntAlias<u16> {
-	using IntAlias<u16>::IntAlias;
-};
-
 struct ArchetypeDesc {
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const ArchetypeDesc& other) const -> bool {
+		return comps == other.comps;
+	}
+
 	CompMask comps;
 };
 }
@@ -26,7 +26,8 @@ struct hash<ecs::ArchetypeDesc> {
 
 namespace ecs {
 struct EXPORT_API Archetype {
-	static constexpr usize BYTES_PER_CHUNK = 1024 * 64;
+	struct Chunk;
+	static constexpr usize BYTES_PER_CHUNK = 1024 * 64 - sizeof(UniquePtr<Chunk>);
 
 	struct CompInfo {
 		usize offset_within_chunk;
@@ -35,10 +36,10 @@ struct EXPORT_API Archetype {
 
 	// @NOTE: May be optimal to make chunks grow exponentially as more are added (will make things a lot more complicated though).
 	struct Chunk {
-		alignas(CACHE_LINE_SIZE) u8 data[BYTES_PER_CHUNK - sizeof(UniquePtr<Chunk>)];
+		alignas(CACHE_LINE_SIZE) u8 data[BYTES_PER_CHUNK];
 		UniquePtr<Chunk> next = null;
 	};
-	static_assert(sizeof(Chunk) == BYTES_PER_CHUNK);
+	static_assert(sizeof(Chunk) == BYTES_PER_CHUNK + sizeof(UniquePtr<Chunk>));
 
 	explicit Archetype(const ArchetypeDesc& in_description);
 
@@ -209,11 +210,17 @@ struct EXPORT_API Archetype {
 		return num_entities -= count;
 	}
 
-	template <typename... Ts>
-	auto for_each_view(cpts::Invokable<usize, const Entity*, Ts*...> auto&& fn) -> void {
+	FORCEINLINE auto remove(const Entity entity) -> usize {
+		return remove_at(entity.get_index());
+	}
+
+	template <typename... Ts> requires (!std::is_empty_v<Ts> && ...)
+	FORCEINLINE auto for_each_view(cpts::Invokable<usize, const Entity*, Ts*...> auto&& fn) -> void {
+#if ASSERTIONS_ENABLED
 		([&] {
 			ASSERTF(description.comps.has<std::decay_t<Ts>>(), "Archetype does not have component {}!", utils::get_type_name<std::decay_t<Ts>>());
 		}(), ...);
+#endif
 
 		const usize offsets[] = {
 			std::ranges::find_if(comps, [](const CompInfo& comp) { return comp.id == get_comp_id<std::decay_t<Ts>>(); })->offset_within_chunk...
@@ -225,7 +232,7 @@ struct EXPORT_API Archetype {
 		});
 	}
 
-	template <typename... Ts>
+	template <typename... Ts> requires (!std::is_empty_v<Ts> && ...)
 	FORCEINLINE auto for_each(cpts::Invokable<const Entity&, Ts&...> auto&& fn) -> void {
 		for_each_view<Ts...>([&](const usize count, const Entity* entities, Ts*... ts) {
 			for (usize i = 0; i < count; ++i) {

@@ -3,7 +3,6 @@
 #include "types.hpp"
 #include "math.hpp"
 #include "assert.hpp"
-#include "optional.hpp"
 #include "utils.hpp"
 
 template <std::unsigned_integral Word>
@@ -23,6 +22,10 @@ struct ConstBitRef {
 
 	[[nodiscard]] FORCEINLINE constexpr operator bool() const {
 		return get();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator!() const -> bool {
+		return !get();
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto operator==(const bool other) const -> bool {
@@ -64,6 +67,10 @@ struct BitRef {
 
 	[[nodiscard]] FORCEINLINE constexpr operator bool() const {
 		return get();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator!() const -> bool {
+		return !get();
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr operator ConstBitRef<Word>() const {
@@ -152,7 +159,7 @@ struct BitMask {
 		return &self.data[0];
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr auto has_any_set() const -> bool {
+	[[nodiscard]] FORCEINLINE constexpr auto has_any_set_bits() const -> bool {
 		#pragma unroll
 		for (const auto& word : data) {
 			if (word != 0) {
@@ -164,7 +171,7 @@ struct BitMask {
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr operator bool() const {
-		return has_any_set();
+		return has_any_set_bits();
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto operator[](this auto&& self, const std::integral auto index) {

@@ -3,16 +3,20 @@
 namespace ecs {
 Archetype::Archetype(const ArchetypeDesc& in_description)
 	: description{in_description} {
-	comps.reserve(description.comps.mask.count_set_bits());
-
 	usize aggregate_size = 0;
 	description.comps.for_each([&](const CompId id) {
+		if (!!(get_type_info(id).flags & rtti::Flags::EMPTY)) {// Tag type. No storage for tags.
+			return;
+		}
+
 		comps.push_back({
 			.offset_within_chunk = 0,
 			.id = id,
 		});
 		aggregate_size += get_type_info(id).size;
 	});
+	comps.shrink_to_fit();
+
 	aggregate_size += sizeof(Entity);
 
 	num_entities_per_chunk = BYTES_PER_CHUNK / aggregate_size;

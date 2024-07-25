@@ -3,6 +3,10 @@
 #include "type_registry.hpp"
 
 namespace ecs {
+struct ArchetypeId final : public IntAlias<u16> {
+	using IntAlias<u16>::IntAlias;
+};
+
 struct CompId final : public IntAlias<u16> {
 	using IntAlias<u16>::IntAlias;
 };

@@ -6,7 +6,6 @@
 #include "types.hpp"
 #include "traits.hpp"
 #include "utils.hpp"
-#include "optional.hpp"
 
 #if 0
 enum class MemberFlags : u8 {

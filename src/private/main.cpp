@@ -1,5 +1,6 @@
 #include "core_include.hpp"
 #include "defines.hpp"
+#include "fmt/core.h"
 #include "static_reflection.hpp"
 #include "types.hpp"
 #include "utils.hpp"
@@ -98,9 +99,12 @@ struct IsTriviallyRelocatable<TestStruct> {
 	static constexpr bool VALUE = true;
 };
 
+#include "ecs/entity_list.hpp"
+
 auto main() -> int {
 	using namespace ecs;
 
+#if 0
 	usize num_entities_per_chunk;
 	{
 		Archetype archetype{ArchetypeDesc{.comps = CompMask::make<SomeStruct, SomeOtherStruct, u8, TestStruct, bool>()}};
@@ -129,6 +133,34 @@ auto main() -> int {
 	fmt::println("Constructed == {}. Destructed == {}", TestStruct::constructed_counter, TestStruct::destructed_counter);
 
 	fmt::println("num per chunk == {}", num_entities_per_chunk);
+#endif
+
+	EntityList list;
+
+	Array<Entity> entities;
+
+	static constexpr auto COUNT = 5;
+
+	for (usize i = 0; i < COUNT; ++i) {
+		entities.push_back(list.reserve_entity());
+	}
+
+	list.remove_entity(entities[3]);
+	list.remove_entity(entities[0]);
+
+	for (usize i = 0; i < COUNT; ++i) {
+		entities.push_back(list.reserve_entity());
+	}
+
+	list.remove_entity(entities[0]);
+
+	for (usize i = 0; i < COUNT; ++i) {
+		entities.push_back(list.reserve_entity());
+	}
+
+	for (const auto& entity : entities) {
+		fmt::println("{}", entity);
+	}
 
 	return EXIT_SUCCESS;
 }

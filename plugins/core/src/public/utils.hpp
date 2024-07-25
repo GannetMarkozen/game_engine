@@ -185,6 +185,45 @@ FORCEINLINE constexpr auto make_index_sequence_param_pack(auto&& fn, auto&&... a
 	}(std::make_integer_sequence<T, COUNT>{});
 }
 
+template <typename... Ts>
+FORCEINLINE constexpr auto visit(const Variant<Ts...>& variant, auto&& fn) -> decltype(auto) {
+	return (std::visit(variant, FORWARD_AUTO(fn)));
+}
+
+template <typename... Ts>
+FORCEINLINE constexpr auto visit(Variant<Ts...>& variant, auto&& fn) -> decltype(auto) {
+	return (std::visit(variant, FORWARD_AUTO(fn)));
+}
+
+template <typename... Ts>
+FORCEINLINE constexpr auto visit(const Tuple<Ts...>& tuple, auto&& fn) -> void {
+	make_index_sequence_param_pack<sizeof...(Ts)>([&]<usize... Is>() constexpr {
+		(fn(std::get<Is>(tuple)), ...);
+	});
+}
+
+template <typename... Ts>
+FORCEINLINE constexpr auto visit(Tuple<Ts...>& tuple, auto&& fn) -> void {
+	make_index_sequence_param_pack<sizeof...(Ts)>([&]<usize... Is>() constexpr {
+		(fn(std::get<Is>(tuple)), ...);
+	});
+}
+
+namespace impl {
+template <typename>
+struct CountImpl;
+
+template <template <typename...> typename Container, typename... Ts>
+struct CountImpl<Container<Ts...>> {
+	static constexpr usize VALUE = sizeof...(Ts);
+};
+}
+
+template <typename T>
+consteval auto count() -> usize {
+	return impl::CountImpl<std::decay_t<T>>::VALUE;
+}
+
 namespace impl {
 template <typename, typename>
 struct Concat;
