@@ -190,11 +190,17 @@ template<std::integral T>
 struct IntAlias {
 	constexpr IntAlias() : value{0} {}
 	explicit IntAlias(NoInit) {}
-	constexpr explicit IntAlias(const std::integral auto in_value) : value{in_value} {}
+	constexpr IntAlias(const std::integral auto in_value) : value{in_value} {}
 	constexpr IntAlias(const IntAlias&) = default;
 	constexpr IntAlias(IntAlias&&) noexcept = default;
+
 	constexpr auto operator=(const IntAlias&) -> IntAlias& = default;
 	constexpr auto operator=(IntAlias&&) noexcept -> IntAlias& = default;
+
+	FORCEINLINE constexpr auto operator=(const std::integral auto in_value) -> IntAlias& {
+		value = in_value;
+		return *this;
+	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto operator==(const std::integral auto other) const { return value == other; }
 
@@ -253,16 +259,22 @@ struct IntAlias {
 		return old;
 	}
 
-	template<typename Other>
-	requires std::is_arithmetic_v<T>
-	[[nodiscard]]
-	FORCEINLINE constexpr operator Other() const { return static_cast<Other>(value); }
+	template<typename Other> requires std::is_arithmetic_v<T>
+	[[nodiscard]] FORCEINLINE constexpr operator Other() const { return static_cast<Other>(value); }
 
 	[[nodiscard]] FORCEINLINE constexpr operator T&() { return value; }
 	[[nodiscard]] FORCEINLINE constexpr operator const T&() const { return value; }
 
 	FORCEINLINE constexpr auto set_value(const T new_value) -> void { value = new_value; }
 	[[nodiscard]] FORCEINLINE constexpr auto get_value() const -> T { return value; }
+
+	[[nodiscard]] static consteval auto max() -> IntAlias {
+		return IntAlias{std::numeric_limits<T>::max()};
+	}
+
+	[[nodiscard]] static consteval auto min() -> IntAlias {
+		return IntAlias{std::numeric_limits<T>::min()};
+	}
 
 private:
 	T value;
@@ -271,7 +283,9 @@ private:
 namespace std {
 template<std::integral T>
 struct hash<IntAlias<T>> {
-	[[nodiscard]] FORCEINLINE auto operator()(const IntAlias<T> value) { return std::hash<T>{}(value.get_value()); }
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const IntAlias<T> value) const -> usize {
+		return std::hash<T>{}(value.get_value());
+	}
 };
 }
 
@@ -361,3 +375,9 @@ struct MemberPtr {
 		return reinterpret_cast<usize>(&(static_cast<Container*>(nullptr)->*member));
 	}
 };
+
+template <usize N>
+using SizedUnsignedIntegral = std::conditional_t<
+	(N <= 8), u8, std::conditional_t<
+	(N <= 16), u16, std::conditional_t<
+	(N <= 32), u32, u64>>>;

@@ -2,7 +2,7 @@
 
 #include "types.hpp"
 #include "rtti.hpp"
-#include "bitmask.hpp"
+#include "static_bitmask.hpp"
 
 namespace cpts {
 template <typename T>
@@ -41,17 +41,17 @@ public:
 };
 
 template <cpts::U16IntAlias IdType, usize N, std::unsigned_integral Word = SizedUnsignedIntegral<N>>
-struct TypeMask {
+struct StaticTypeMask {
 	using TypeRegistry = TypeRegistry<IdType>;
 
 	template <typename... Ts>
-	[[nodiscard]] FORCEINLINE static auto make() -> TypeMask {
-		TypeMask out;
+	[[nodiscard]] FORCEINLINE static auto make() -> StaticTypeMask {
+		StaticTypeMask out;
 		(out.add<Ts>(), ...);
 		return out;
 	}
 
-	FORCEINLINE constexpr auto add(const IdType id) -> TypeMask& {
+	FORCEINLINE constexpr auto add(const IdType id) -> StaticTypeMask& {
 		mask[id.get_value()] = true;
 		return *this;
 	}
@@ -61,7 +61,7 @@ struct TypeMask {
 	}
 
 	template <typename T>
-	FORCEINLINE auto add() -> TypeMask& {
+	FORCEINLINE auto add() -> StaticTypeMask& {
 		return add(TypeRegistry::template get_id<T>());
 	}
 
@@ -76,38 +76,38 @@ struct TypeMask {
 		});
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr auto operator==(const TypeMask& other) const -> bool {
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const StaticTypeMask& other) const -> bool {
 		return mask == other.mask;
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr auto operator&=(const TypeMask& other) -> TypeMask& {
+	[[nodiscard]] FORCEINLINE constexpr auto operator&=(const StaticTypeMask& other) -> StaticTypeMask& {
 		mask &= other.mask;
 		return *this;
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr auto operator|=(const TypeMask& other) -> TypeMask& {
+	[[nodiscard]] FORCEINLINE constexpr auto operator|=(const StaticTypeMask& other) -> StaticTypeMask& {
 		mask |= other.mask;
 		return *this;
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr auto operator^=(const TypeMask& other) -> TypeMask& {
+	[[nodiscard]] FORCEINLINE constexpr auto operator^=(const StaticTypeMask& other) -> StaticTypeMask& {
 		mask ^= other.mask;
 		return *this;
 	}
 
-	[[nodiscard]] FORCEINLINE friend constexpr auto operator&(const TypeMask& a, const TypeMask& b) -> TypeMask {
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator&(const StaticTypeMask& a, const StaticTypeMask& b) -> StaticTypeMask {
 		return auto{a} &= b;
 	}
 
-	[[nodiscard]] FORCEINLINE friend constexpr auto operator|(const TypeMask& a, const TypeMask& b) -> TypeMask {
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator|(const StaticTypeMask& a, const StaticTypeMask& b) -> StaticTypeMask {
 		return auto{a} |= b;
 	}
 
-	[[nodiscard]] FORCEINLINE friend constexpr auto operator^(const TypeMask& a, const TypeMask& b) -> TypeMask {
+	[[nodiscard]] FORCEINLINE friend constexpr auto operator^(const StaticTypeMask& a, const StaticTypeMask& b) -> StaticTypeMask {
 		return auto{a} ^= b;
 	}
 
-	BitMask<N, Word> mask;
+	StaticBitMask<N, Word> mask;
 };
 
 template <cpts::U16IntAlias T>
@@ -118,8 +118,8 @@ template <cpts::U16IntAlias T>
 
 namespace std {
 template <cpts::U16IntAlias T, usize N, std::unsigned_integral Word>
-struct hash<ecs::TypeMask<T, N, Word>> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::TypeMask<T, N, Word>& value) const -> usize {
+struct hash<ecs::StaticTypeMask<T, N, Word>> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::StaticTypeMask<T, N, Word>& value) const -> usize {
 		return value.mask.hash();
 	}
 };

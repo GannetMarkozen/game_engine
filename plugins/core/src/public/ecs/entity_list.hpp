@@ -3,7 +3,6 @@
 #include "entity.hpp"
 #include "ids.hpp"
 #include "types.hpp"
-#include <limits>
 
 namespace ecs {
 struct EntityDesc {
@@ -15,8 +14,6 @@ struct EntityList {
 	struct EntityDescOrNext {
 		constexpr EntityDescOrNext()
 			: next{NULL_OPTIONAL} {}
-
-		constexpr ~EntityDescOrNext() {}
 
 		union {
 			EntityDesc desc;
@@ -85,6 +82,12 @@ struct EntityList {
 		initialized_mask[entity.get_index() / 64] &= ~(1ull << entity.get_index() % 64);
 
 		// @TODO: Deallocate.
+	}
+
+	template <typename Self>
+	[[nodiscard]] FORCEINLINE auto get_entity_desc(this Self&& self, const Entity entity) -> decltype(auto) {
+		ASSERTF(self.is_valid_entity(entity), "Invalid entity {{}}!", entity);
+		return (std::forward_like<Self>(self.entries[entity.get_index()].desc));
 	}
 
 	[[nodiscard]] FORCEINLINE auto is_valid_index(const std::integral auto index) const -> bool {

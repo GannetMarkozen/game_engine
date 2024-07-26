@@ -8,30 +8,6 @@
 
 // @TODO: Create custom allocator for SharedPtr Tasks.
 
-struct ThreadId : public IntAlias<u16> {
-	using IntAlias<u16>::IntAlias;
-};
-
-namespace thread {
-namespace impl {
-thread_local inline ThreadId thread_index{static_cast<u16>(0)};
-}
-
-constexpr ThreadId MAIN_THREAD_ID{static_cast<u16>(0)};
-
-[[nodiscard]] FORCEINLINE auto get_this_thread_id() -> ThreadId {
-	return impl::thread_index;
-}
-
-[[nodiscard]] FORCEINLINE auto is_in_main_thread() -> bool {
-	return get_this_thread_id() == MAIN_THREAD_ID;
-}
-
-[[nodiscard]] FORCEINLINE auto is_in_worker_thread() -> bool {
-	return !is_in_main_thread();
-}
-}
-
 namespace task {
 enum class Priority : u8 {
 	HIGH, NORMAL, LOW, COUNT
@@ -257,6 +233,7 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 
 inline auto init(const usize num_workers = std::thread::hardware_concurrency() - 1) -> bool {
 	ASSERT(thread::is_in_main_thread());
+	ASSERTF(num_workers < thread::MAX_THREADS, "Attempted to create {} worker threads when MAX_THREADS is {}!", num_workers, thread::MAX_THREADS);
 
 	thread_conditions.reserve(num_workers + 1);// 1 is reserved for the Main thread.
 

@@ -225,7 +225,6 @@ struct EXPORT_API Archetype {
 		const usize offsets[] = {
 			std::ranges::find_if(comps, [](const CompInfo& comp) { return comp.id == get_comp_id<std::decay_t<Ts>>(); })->offset_within_chunk...
 		};
-		static_assert(std::is_trivially_copy_constructible_v<CompInfo>);
 
 		for_each_chunk([&](Chunk& chunk, const usize count) {
 			std::invoke(fn, count, reinterpret_cast<const Entity*>(&chunk.data[entity_offset_within_chunk]), reinterpret_cast<Ts*>(&chunk.data[offsets[utils::index_of_type<Ts, Ts...>()]])...);

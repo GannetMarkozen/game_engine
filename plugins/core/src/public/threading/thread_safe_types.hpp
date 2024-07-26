@@ -4,6 +4,34 @@
 #include <shared_mutex>
 #include <concurrentqueue.h>
 #include "defines.hpp"
+#include "types.hpp"
+
+struct ThreadId : public IntAlias<u16> {
+	using IntAlias<u16>::IntAlias;
+};
+
+namespace thread {
+namespace impl {
+thread_local inline ThreadId thread_index{static_cast<u16>(0)};
+}
+
+// Maximum number of allowed concurrent threads. This exists for certain data structures to be decently performant.
+constexpr usize MAX_THREADS = 32;
+
+constexpr ThreadId MAIN_THREAD_ID{static_cast<u16>(0)};
+
+[[nodiscard]] FORCEINLINE auto get_this_thread_id() -> ThreadId {
+	return impl::thread_index;
+}
+
+[[nodiscard]] FORCEINLINE auto is_in_main_thread() -> bool {
+	return get_this_thread_id() == MAIN_THREAD_ID;
+}
+
+[[nodiscard]] FORCEINLINE auto is_in_worker_thread() -> bool {
+	return !is_in_main_thread();
+}
+}
 
 template<typename T, typename Traits = moodycamel::ConcurrentQueueDefaultTraits>
 using ConcurrentQueue = moodycamel::ConcurrentQueue<T, Traits>;
@@ -53,7 +81,6 @@ struct alignas(CACHE_LINE_SIZE) CacheLinePadded {
 private:
 	T value;
 };
-
 
 namespace cpts {
 template<typename T>
@@ -163,6 +190,44 @@ using Mutex = std::mutex;
 
 using SharedMutex = std::shared_mutex;
 
+using RecursiveMutex = std::recursive_mutex;
+
+// Can recursively call lock() / lock_shared() within the same thread without deadlocking. Will still deadlock if you first
+// acquire a shared lock then an exclusive lock - can not upgrade locks.
+struct RecursiveSharedMutex {
+	FORCEINLINE auto lock() -> void {
+		if (exclusive_owner != std::this_thread::get_id()) {// @NOTE: Does this comparison have to be atomic?
+			mutex.lock();
+			exclusive_owner = std::this_thread::get_id();
+		}
+		++exclusive_recursion_count;
+	}
+
+	FORCEINLINE auto unlock() -> void {
+		if (--exclusive_recursion_count == 0) {
+			exclusive_owner = std::thread::id{};
+			mutex.unlock();
+		}
+	}
+
+	FORCEINLINE auto lock_shared() -> void {
+		if (exclusive_owner != std::this_thread::get_id()) {
+			mutex.lock_shared();
+		}
+	}
+
+	FORCEINLINE auto unlock_shared() -> void {
+		if (exclusive_owner != std::this_thread::get_id()) {
+			mutex.unlock_shared();
+		}
+	}
+
+private:
+	SharedMutex mutex;
+	std::atomic<std::thread::id> exclusive_owner;
+	u32 exclusive_recursion_count = 0;
+};
+
 // RAII mutex scope guard.
 template <cpts::Mutex T>
 struct ScopeLock {
@@ -189,22 +254,25 @@ struct UniqueLock {
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr UniqueLock(UniqueLock&& other) noexcept {
-		if (this == &other) [[unlikely]] return;
+		if (this == &other) [[unlikely]] {
+			return;
+		}
 		mutex = other.mutex;
 		other.mutex = nullptr;
 	}
 
 	FORCEINLINE auto operator=(UniqueLock&& other) noexcept -> UniqueLock& {
-		if (this == &other) [[unlikely]] return *this;
+		if (this == &other) [[unlikely]] {
+			return;
+		}
 		unlock();
+
 		mutex = other.mutex;
-		other.mutex = nullptr;
+		other.mutex = null;
 	}
 
 	FORCEINLINE ~UniqueLock() {
-		if (mutex) {
-			mutex->unlock();
-		}
+		unlock();
 	}
 
 	FORCEINLINE auto lock() -> void {
@@ -216,7 +284,56 @@ struct UniqueLock {
 	FORCEINLINE auto unlock() -> void {
 		if (mutex) {
 			mutex->unlock();
-			mutex = nullptr;
+			mutex = null;
+		}
+	}
+
+private:
+	T* mutex;
+};
+
+template <cpts::SharedMutex T>
+struct UniqueSharedLock {
+	[[nodiscard]] FORCEINLINE constexpr explicit UniqueSharedLock(T& in_mutex)
+		: mutex{&in_mutex} {
+		mutex->lock_shared();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr UniqueSharedLock(UniqueSharedLock&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+		mutex = other.mutex;
+		other.mutex = null;
+	}
+
+	FORCEINLINE constexpr auto operator=(UniqueSharedLock&& other) noexcept -> UniqueSharedLock& {
+		if (this == &other) [[unlikely]] {
+			return *this;
+		}
+
+		unlock();
+
+		mutex = other.mutex;
+		other.mutex = null;
+
+		return *this;
+	}
+
+	FORCEINLINE ~UniqueSharedLock() {
+		unlock();
+	}
+
+	FORCEINLINE auto lock() -> void {
+		if (mutex) {
+			mutex->lock_shared();
+		}
+	}
+
+	FORCEINLINE auto unlock() -> void {
+		if (mutex) {
+			mutex->unlock_shared();
+			mutex = null;
 		}
 	}
 
@@ -229,8 +346,7 @@ template <cpts::SharedMutex T>
 struct ScopeSharedLock {
 	NON_COPYABLE(ScopeSharedLock);
 
-	[[nodiscard]]
-	FORCEINLINE constexpr explicit ScopeSharedLock(T& in_mutex)
+	[[nodiscard]] FORCEINLINE constexpr explicit ScopeSharedLock(T& in_mutex)
 		: mutex{in_mutex} {
 		mutex.lock_shared();
 	}
@@ -277,11 +393,9 @@ template<typename T, cpts::SharedMutex SharedMutexType = SharedMutex>
 struct RWLocked {
 	NON_COPYABLE(RWLocked);
 
-	[[nodiscard]]
 	FORCEINLINE constexpr RWLocked() = default;
 
-	template <typename... Args>
-	[[nodiscard]]
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
 	FORCEINLINE constexpr explicit RWLocked(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
@@ -305,7 +419,7 @@ struct RWLocked {
 			owner.mutex.lock_shared();
 		}
 
-		~ScopedReadAccess() {
+		FORCEINLINE ~ScopedReadAccess() {
 			owner.mutex.unlock_shared();
 		}
 
@@ -331,6 +445,10 @@ struct RWLocked {
 		explicit ScopedWriteAccess(RWLocked& owner [[clang::lifetimebound]])
 			: owner{owner} {
 			owner.mutex.lock();
+		}
+
+		FORCEINLINE ~ScopedWriteAccess() {
+			owner.mutex.unlock();
 		}
 
 		[[nodiscard]] FORCEINLINE auto operator*() const -> T& {

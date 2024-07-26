@@ -16,5 +16,5 @@ template <typename T>
 	return TypeRegistry<CompId>::get_id<T>();
 }
 
-using CompMask = TypeMask<CompId, 64>;
+using CompMask = StaticTypeMask<CompId, 64>;
 }

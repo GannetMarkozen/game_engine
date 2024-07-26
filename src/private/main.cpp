@@ -100,9 +100,22 @@ struct IsTriviallyRelocatable<TestStruct> {
 };
 
 #include "ecs/entity_list.hpp"
+#include "ecs/world.hpp"
 
 auto main() -> int {
 	using namespace ecs;
+
+	BitMask<> mask;
+	mask.set(25);
+
+	BitMask<> mask1;
+	mask1.set(24).set(23).set(25).set(100);
+
+	auto combined = std::move(mask) | mask1;
+
+	combined.for_each_set_bit([&](const usize i) {
+		fmt::println("set {}", i);
+	});
 
 #if 0
 	usize num_entities_per_chunk;
@@ -135,6 +148,8 @@ auto main() -> int {
 	fmt::println("num per chunk == {}", num_entities_per_chunk);
 #endif
 
+#if 0
+
 	EntityList list;
 
 	Array<Entity> entities;
@@ -145,14 +160,9 @@ auto main() -> int {
 		entities.push_back(list.reserve_entity());
 	}
 
-	list.remove_entity(entities[3]);
-	list.remove_entity(entities[0]);
-
 	for (usize i = 0; i < COUNT; ++i) {
-		entities.push_back(list.reserve_entity());
+		list.remove_entity(entities[i]);
 	}
-
-	list.remove_entity(entities[0]);
 
 	for (usize i = 0; i < COUNT; ++i) {
 		entities.push_back(list.reserve_entity());
@@ -161,6 +171,7 @@ auto main() -> int {
 	for (const auto& entity : entities) {
 		fmt::println("{}", entity);
 	}
+#endif
 
 	return EXIT_SUCCESS;
 }
