@@ -72,6 +72,10 @@ struct BitMask {
 		return true;
 	}
 
+	constexpr auto reset() -> void {
+		words.clear();
+	}
+
 	constexpr auto for_each_set_bit(cpts::Invokable<usize> auto&& fn) const -> void {
 		for (usize i = 0; i < words.size(); ++i) {
 			for (Word word = words[i]; word; word &= word - 1) {

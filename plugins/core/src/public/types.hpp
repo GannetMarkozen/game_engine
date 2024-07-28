@@ -185,108 +185,136 @@ template <typename... Args>
 template <typename... Ts>
 struct TypeList {};
 
-// Subclass this to make an integer type that can't be coerced into other IntAlias types.
-template<std::integral T>
-struct IntAlias {
-	constexpr IntAlias() : value{0} {}
-	explicit IntAlias(NoInit) {}
-	constexpr IntAlias(const std::integral auto in_value) : value{in_value} {}
-	constexpr IntAlias(const IntAlias&) = default;
-	constexpr IntAlias(IntAlias&&) noexcept = default;
+#define _DECLARE_INT_ALIAS(NAME, TYPE, ...) \
+	static_assert(std::integral<TYPE>, "Declared int alias " #NAME " that doesn't have an integer type!"); \
+	struct NAME { \
+		using Type = TYPE; \
+		\
+		constexpr NAME(const NAME&) = default; \
+		constexpr NAME(NAME&&) noexcept = default; \
+		constexpr auto operator=(const NAME&) -> NAME& = default; \
+		constexpr auto operator=(NAME&&) noexcept -> NAME& = default; \
+		\
+		constexpr NAME() : value{0} {} \
+		constexpr explicit NAME(NoInit) {} \
+		\
+		template <std::convertible_to<TYPE> T> requires (!cpts::IntAlias<T>) \
+		constexpr NAME(T&& in_value) : value{static_cast<TYPE>(std::forward<T>(in_value))} {} \
+		\
+		template <std::convertible_to<TYPE> T> requires (!cpts::IntAlias<T>) \
+		FORCEINLINE constexpr auto operator=(T&& in_value) -> NAME& { \
+			value = static_cast<TYPE>(std::forward<T>(in_value)); \
+			return *this; \
+		} \
+		\
+		[[nodiscard]] FORCEINLINE constexpr auto operator==(const NAME other) const -> bool { \
+			return value == other.value; \
+		} \
+		\
+		[[nodiscard]] FORCEINLINE constexpr auto operator!=(const NAME other) const -> bool { \
+			return value != other.value; \
+		} \
+		\
+		[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const NAME other) const { \
+			return value <=> other.value; \
+		} \
+		\
+		template <std::three_way_comparable_with<TYPE> T> requires (!std::same_as<std::decay_t<T>, NAME>) \
+		[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const T& other) const { \
+			return value <=> other; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator+=(const std::integral auto other) -> NAME& { \
+			value += other; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator-=(const std::integral auto other) -> NAME& { \
+			value -= other; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator*=(const std::integral auto other) -> NAME& { \
+			value *= other; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator/=(const std::integral auto other) -> NAME& { \
+			value /= other; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator++() -> NAME& { \
+			++value; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator++(int) -> NAME { \
+			auto old = *this; \
+			++*this; \
+			return old; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator--() -> NAME& { \
+			--value; \
+			return *this; \
+		} \
+		\
+		FORCEINLINE constexpr auto operator--(int) -> NAME { \
+			auto old = *this; \
+			--*this; \
+			return old; \
+		} \
+		\
+		template <typename T> requires (std::is_arithmetic_v<T> && std::convertible_to<TYPE, T>) \
+		[[nodiscard]] FORCEINLINE constexpr operator T() const { return static_cast<T>(value); } \
+		\
+		[[nodiscard]] FORCEINLINE constexpr operator TYPE&() { return value; } \
+		[[nodiscard]] FORCEINLINE constexpr operator const TYPE&() const { return value; } \
+		\
+		[[nodiscard]] FORCEINLINE constexpr auto get_value() const -> TYPE { return value; } \
+		FORCEINLINE constexpr auto set_value(const TYPE new_value) -> NAME& { value = new_value; return *this; } \
+		\
+		[[nodiscard]] static consteval auto max() -> NAME { \
+			return NAME{std::numeric_limits<TYPE>::max()}; \
+		} \
+		\
+		[[nodiscard]] static consteval auto min() -> NAME { \
+			return NAME{std::numeric_limits<TYPE>::min()}; \
+		} \
+		\
+		__VA_ARGS__ \
+	private: \
+		TYPE value; \
+	};
 
-	constexpr auto operator=(const IntAlias&) -> IntAlias& = default;
-	constexpr auto operator=(IntAlias&&) noexcept -> IntAlias& = default;
+#define DECLARE_INT_ALIAS(NAME, TYPE, ...) \
+	_DECLARE_INT_ALIAS(NAME, TYPE, __VA_ARGS__) \
+	\
+	template <> \
+	struct std::hash<NAME> { \
+		[[nodiscard]] FORCEINLINE constexpr auto operator()(const NAME value) const -> usize { \
+			return std::hash<TYPE>{}(value.get_value()); \
+		} \
+	};
 
-	FORCEINLINE constexpr auto operator=(const std::integral auto in_value) -> IntAlias& {
-		value = in_value;
-		return *this;
-	}
+#define DECLARE_NAMESPACED_INT_ALIAS(NAMESPACE, NAME, TYPE, ...) \
+	namespace NAMESPACE { \
+		_DECLARE_INT_ALIAS(NAME, TYPE, __VA_ARGS__) \
+	} \
+	\
+	template <> \
+	struct std::hash<NAMESPACE::NAME> { \
+		[[nodiscard]] FORCEINLINE constexpr auto operator()(const NAMESPACE::NAME value) const -> usize { \
+			return std::hash<TYPE>{}(value.get_value()); \
+		} \
+	};
 
-	[[nodiscard]] FORCEINLINE constexpr auto operator==(const std::integral auto other) const { return value == other; }
-
-	template <std::integral Other>
-	[[nodiscard]] FORCEINLINE constexpr auto operator==(const IntAlias<Other>& other) const { return value == other.value; }
-
-	[[nodiscard]] FORCEINLINE constexpr auto operator!=(const std::integral auto other) const { return value != other; }
-
-	template<std::integral Other>
-	[[nodiscard]] FORCEINLINE constexpr auto operator!=(const IntAlias<Other>& other) const { return value != other.value; }
-
-	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const std::integral auto other) const { return value <=> other; }
-
-	template<std::integral Other>
-	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const IntAlias<Other>& other) const { return value <=> other.value; }
-
-	FORCEINLINE constexpr auto operator+=(const std::integral auto other) -> IntAlias& {
-		value += other;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator-=(const std::integral auto other) -> IntAlias& {
-		value -= other;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator*=(const std::integral auto other) -> IntAlias& {
-		value *= other;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator/=(const std::integral auto other) -> IntAlias& {
-		value /= other;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator++() -> IntAlias& {
-		++value;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator++(int) -> IntAlias {
-		IntAlias old = *this;
-		++*this;
-		return old;
-	}
-
-	FORCEINLINE constexpr auto operator--() -> IntAlias& {
-		--value;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator--(int) -> IntAlias {
-		IntAlias old = *this;
-		--*this;
-		return old;
-	}
-
-	template<typename Other> requires std::is_arithmetic_v<T>
-	[[nodiscard]] FORCEINLINE constexpr operator Other() const { return static_cast<Other>(value); }
-
-	[[nodiscard]] FORCEINLINE constexpr operator T&() { return value; }
-	[[nodiscard]] FORCEINLINE constexpr operator const T&() const { return value; }
-
-	FORCEINLINE constexpr auto set_value(const T new_value) -> void { value = new_value; }
-	[[nodiscard]] FORCEINLINE constexpr auto get_value() const -> T { return value; }
-
-	[[nodiscard]] static consteval auto max() -> IntAlias {
-		return IntAlias{std::numeric_limits<T>::max()};
-	}
-
-	[[nodiscard]] static consteval auto min() -> IntAlias {
-		return IntAlias{std::numeric_limits<T>::min()};
-	}
-
-private:
-	T value;
-};
-
-namespace std {
-template<std::integral T>
-struct hash<IntAlias<T>> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const IntAlias<T> value) const -> usize {
-		return std::hash<T>{}(value.get_value());
-	}
-};
+namespace cpts {
+template <typename T>
+concept IntAlias = requires {
+	typename T::Type;
+} && !std::integral<T> && std::integral<typename T::Type> && sizeof(T) == sizeof(typename T::Type) && alignof(T) == alignof(typename T::Type);
 }
 
 template <usize N>

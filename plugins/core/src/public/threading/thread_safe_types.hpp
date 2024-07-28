@@ -6,9 +6,7 @@
 #include "defines.hpp"
 #include "types.hpp"
 
-struct ThreadId : public IntAlias<u16> {
-	using IntAlias<u16>::IntAlias;
-};
+DECLARE_INT_ALIAS(ThreadId, u16);
 
 namespace thread {
 namespace impl {
@@ -225,7 +223,7 @@ struct RecursiveSharedMutex {
 private:
 	SharedMutex mutex;
 	std::atomic<std::thread::id> exclusive_owner;
-	u32 exclusive_recursion_count = 0;
+	std::atomic<u32> exclusive_recursion_count = 0;
 };
 
 // RAII mutex scope guard.
@@ -253,12 +251,17 @@ struct UniqueLock {
 		mutex->lock();
 	}
 
+	[[nodiscard]] FORCEINLINE constexpr explicit UniqueLock(T* in_mutex)
+		: mutex{in_mutex} {
+		lock();
+	}
+
 	[[nodiscard]] FORCEINLINE constexpr UniqueLock(UniqueLock&& other) noexcept {
 		if (this == &other) [[unlikely]] {
 			return;
 		}
 		mutex = other.mutex;
-		other.mutex = nullptr;
+		other.mutex = null;
 	}
 
 	FORCEINLINE auto operator=(UniqueLock&& other) noexcept -> UniqueLock& {
@@ -297,6 +300,11 @@ struct UniqueSharedLock {
 	[[nodiscard]] FORCEINLINE constexpr explicit UniqueSharedLock(T& in_mutex)
 		: mutex{&in_mutex} {
 		mutex->lock_shared();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr explicit UniqueSharedLock(T* in_mutex)
+		: mutex{in_mutex} {
+		lock();
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr UniqueSharedLock(UniqueSharedLock&& other) noexcept {
@@ -364,12 +372,12 @@ template <typename T, cpts::Mutex MutexType = Mutex>
 struct Locked {
 	NON_COPYABLE(Locked);
 
-	template<typename... Args>
+	template<typename... Args> requires std::constructible_from<T, Args&&...>
 	FORCEINLINE constexpr explicit Locked(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	template<typename... Args>
-	FORCEINLINE auto lock(cpts::Invokable<T&, Args...> auto&& func, Args&&... args) -> decltype(auto) {
+	FORCEINLINE auto lock(cpts::Invokable<T&, Args&&...> auto&& func, Args&&... args) -> decltype(auto) {
 		ScopeLock lock{mutex};
 		return (std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...));
 	}
@@ -406,7 +414,7 @@ struct RWLocked {
 	}
 
 	template <typename... Args>
-	FORCEINLINE auto write(cpts::Invokable<T&, Args...> auto&& func, Args&&... args) -> decltype(auto) {
+	FORCEINLINE auto write(cpts::Invokable<T&, Args&&...> auto&& func, Args&&... args) -> decltype(auto) {
 		ScopeLock lock{mutex};
 		return (std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...));
 	}

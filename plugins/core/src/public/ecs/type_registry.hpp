@@ -4,13 +4,8 @@
 #include "rtti.hpp"
 #include "static_bitmask.hpp"
 
-namespace cpts {
-template <typename T>
-concept U16IntAlias = std::derived_from<T, IntAlias<u16>> && !std::same_as<T, IntAlias<u16>>;
-}
-
 namespace ecs {
-template <cpts::U16IntAlias IdType>
+template <cpts::IntAlias IdType>
 struct TypeRegistry {
 	EXPORT_API inline static Array<const rtti::TypeInfo*> TYPE_INFOS;
 
@@ -19,7 +14,7 @@ private:
 	struct TypeInstantiator {
 		EXPORT_API inline static const IdType ID = [] {
 			const usize index = TYPE_INFOS.size();
-			ASSERTF(index < UINT16_MAX, "TypeRegistry for type {} has exceeded {} registered types!", utils::get_type_name<T>(), UINT16_MAX);
+			ASSERTF(index < IdType::max(), "TypeRegistry for type {} has exceeded {} registered types!", utils::get_type_name<T>(), IdType::max());
 			TYPE_INFOS.push_back(&rtti::get_type_info<T>());
 			return IdType{static_cast<u16>(index)};
 		}();
@@ -40,7 +35,7 @@ public:
 	}
 };
 
-template <cpts::U16IntAlias IdType, usize N, std::unsigned_integral Word = SizedUnsignedIntegral<N>>
+template <cpts::IntAlias IdType, usize N, std::unsigned_integral Word = SizedUnsignedIntegral<N>>
 struct StaticTypeMask {
 	using TypeRegistry = TypeRegistry<IdType>;
 
@@ -110,14 +105,14 @@ struct StaticTypeMask {
 	StaticBitMask<N, Word> mask;
 };
 
-template <cpts::U16IntAlias T>
+template <cpts::IntAlias T>
 [[nodiscard]] FORCEINLINE auto get_type_info(const T id) -> const rtti::TypeInfo& {
 	return TypeRegistry<T>::get_type_info(id);
 }
 }
 
 namespace std {
-template <cpts::U16IntAlias T, usize N, std::unsigned_integral Word>
+template <cpts::IntAlias T, usize N, std::unsigned_integral Word>
 struct hash<ecs::StaticTypeMask<T, N, Word>> {
 	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::StaticTypeMask<T, N, Word>& value) const -> usize {
 		return value.mask.hash();
