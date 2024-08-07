@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.hpp"
+#include "threading/thread_safe_types.hpp"
 
 template <std::unsigned_integral Word>
 struct ConstBitRef {
@@ -56,6 +57,28 @@ struct BitRef {
 
 	FORCEINLINE constexpr auto operator=(const bool new_value) const -> const BitRef& {
 		return set(new_value);
+	}
+
+	auto atomic_set(const bool new_value, const std::memory_order memory_order = std::memory_order_consume) -> BitRef& {
+		Word expected = reinterpret_cast<Atomic<Word>&>(value).load(std::memory_order_relaxed);
+
+		if (new_value) {
+			while ((expected & mask) != mask && !reinterpret_cast<Atomic<Word>&>(value).compare_exchange_weak(expected, expected | mask, memory_order, std::memory_order_relaxed)) [[likely]] {
+				std::this_thread::yield();
+				//expected = reinterpret_cast<Atomic<Word>&>(value).load(std::memory_order_relaxed);
+			}
+		} else {
+			while ((expected & mask) && !reinterpret_cast<Atomic<Word>&>(value).compare_exchange_weak(expected, expected & ~mask, memory_order, std::memory_order_relaxed)) [[likely]] {
+				std::this_thread::yield();
+				//expected = reinterpret_cast<Atomic<Word>&>(value).load(std::memory_order_relaxed);
+			}
+		}
+
+		return *this;
+	}
+
+	[[nodiscard]] auto atomic_get(const std::memory_order memory_order = std::memory_order_acquire) const -> bool {
+		return reinterpret_cast<const Atomic<Word>&>(value).load(memory_order) & mask;
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto operator*() const -> bool {

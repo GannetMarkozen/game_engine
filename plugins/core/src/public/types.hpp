@@ -198,10 +198,10 @@ struct TypeList {};
 		constexpr NAME() : value{0} {} \
 		constexpr explicit NAME(NoInit) {} \
 		\
-		template <std::convertible_to<TYPE> T> requires (!cpts::IntAlias<T>) \
+		template <std::convertible_to<TYPE> T> requires (!::cpts::IntAlias<std::decay_t<T>>) \
 		constexpr NAME(T&& in_value) : value{static_cast<TYPE>(std::forward<T>(in_value))} {} \
 		\
-		template <std::convertible_to<TYPE> T> requires (!cpts::IntAlias<T>) \
+		template <std::convertible_to<TYPE> T> requires (!::cpts::IntAlias<std::decay_t<T>>) \
 		FORCEINLINE constexpr auto operator=(T&& in_value) -> NAME& { \
 			value = static_cast<TYPE>(std::forward<T>(in_value)); \
 			return *this; \
@@ -283,11 +283,23 @@ struct TypeList {};
 			return NAME{std::numeric_limits<TYPE>::min()}; \
 		} \
 		\
+		[[nodiscard]] FORCEINLINE static constexpr auto invalid_id() -> NAME { \
+			if constexpr (std::signed_integral<TYPE>) { \
+				return min(); \
+			} else { \
+				return max(); \
+			} \
+		} \
+		\
+		[[nodiscard]] FORCEINLINE constexpr auto is_valid() const -> bool { \
+			return *this != invalid_id(); \
+		} \
 		__VA_ARGS__ \
 	private: \
 		TYPE value; \
 	};
 
+// Must be declared in global scope.
 #define DECLARE_INT_ALIAS(NAME, TYPE, ...) \
 	_DECLARE_INT_ALIAS(NAME, TYPE, __VA_ARGS__) \
 	\
@@ -298,6 +310,7 @@ struct TypeList {};
 		} \
 	};
 
+// Must be declared in global scope.
 #define DECLARE_NAMESPACED_INT_ALIAS(NAMESPACE, NAME, TYPE, ...) \
 	namespace NAMESPACE { \
 		_DECLARE_INT_ALIAS(NAME, TYPE, __VA_ARGS__) \

@@ -53,7 +53,7 @@ struct EXPORT_API Archetype {
 		return *current_chunk;
 	}
 
-	auto for_each_chunk(cpts::Invokable<Chunk&, usize> auto&& fn) -> void {
+	auto for_each_chunk(::cpts::Invokable<Chunk&, usize> auto&& fn) -> void {
 		const usize num_chunks = math::divide_and_round_up(num_entities, num_entities_per_chunk);
 		if (num_chunks == 0) {
 			return;
@@ -68,7 +68,7 @@ struct EXPORT_API Archetype {
 		std::invoke(fn, *current_chunk, ((num_entities + num_entities_per_chunk - 1) % num_entities_per_chunk) + 1);
 	}
 
-	auto for_each_chunk_in_range(const usize start, const usize count, cpts::Invokable<Chunk&, usize, usize> auto&& fn) -> void {
+	auto for_each_chunk_in_range(const usize start, const usize count, ::cpts::Invokable<Chunk&, usize, usize> auto&& fn) -> void {
 		fmt::println("Start == {}. Count == {}", start, count);
 
 		if (num_entities == 0) {
@@ -112,7 +112,7 @@ struct EXPORT_API Archetype {
 		}
 	}
 
-	FORCEINLINE auto for_each_chunk_from_start(const usize start, cpts::Invokable<Chunk&, usize, usize> auto&& fn) -> void {
+	FORCEINLINE auto for_each_chunk_from_start(const usize start, ::cpts::Invokable<Chunk&, usize, usize> auto&& fn) -> void {
 		for_each_chunk_in_range(start, num_entities - start, FORWARD_AUTO(fn));
 	}
 
@@ -137,7 +137,7 @@ struct EXPORT_API Archetype {
 		ASSERT_UNREACHABLE;
 	}
 
-	auto add_defaulted_entities(const cpts::Range<Entity> auto& entities) -> usize {
+	auto add_defaulted_entities(const ::cpts::Range<Entity> auto& entities) -> usize {
 		auto it = std::ranges::begin(entities);
 		const usize count = std::ranges::end(entities) - it;
 		ASSERT(count > 0);
@@ -215,7 +215,7 @@ struct EXPORT_API Archetype {
 	}
 
 	template <typename... Ts> requires (!std::is_empty_v<Ts> && ...)
-	FORCEINLINE auto for_each_view(cpts::Invokable<usize, const Entity*, Ts*...> auto&& fn) -> void {
+	FORCEINLINE auto for_each_view(::cpts::Invokable<usize, const Entity*, Ts*...> auto&& fn) -> void {
 #if ASSERTIONS_ENABLED
 		([&] {
 			ASSERTF(description.comps.has<std::decay_t<Ts>>(), "Archetype does not have component {}!", utils::get_type_name<std::decay_t<Ts>>());
@@ -232,7 +232,7 @@ struct EXPORT_API Archetype {
 	}
 
 	template <typename... Ts> requires (!std::is_empty_v<Ts> && ...)
-	FORCEINLINE auto for_each(cpts::Invokable<const Entity&, Ts&...> auto&& fn) -> void {
+	FORCEINLINE auto for_each(::cpts::Invokable<const Entity&, Ts&...> auto&& fn) -> void {
 		for_each_view<Ts...>([&](const usize count, const Entity* entities, Ts*... ts) {
 			for (usize i = 0; i < count; ++i) {
 				std::invoke(fn, entities[i], ts[i]...);

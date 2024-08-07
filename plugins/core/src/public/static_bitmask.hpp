@@ -71,6 +71,15 @@ struct StaticBitMask {
 		return false;
 	}
 
+	FORCEINLINE constexpr auto negate() -> StaticBitMask& {
+		#pragma unroll
+		for (usize i = 0; i < WORD_COUNT; ++i) {
+			data[i] = ~data[i];
+		}
+		zero_extraneous_bits();
+		return *this;
+	}
+
 	[[nodiscard]] FORCEINLINE constexpr operator bool() const {
 		return has_any_set_bits();
 	}
@@ -129,6 +138,10 @@ struct StaticBitMask {
 		return *this;
 	}
 
+	[[nodiscard]] FORCEINLINE constexpr friend auto operator~(StaticBitMask self) -> StaticBitMask {
+		return self.negate();
+	}
+
 	template <typename Self>
 	[[nodiscard]] FORCEINLINE constexpr auto get_word(this Self&& self, const std::integral auto index) -> decltype(auto) {
 		ASSERTF(index > 0 && index < WORD_COUNT, "Index {} out of range {}!", index, WORD_COUNT);
@@ -176,11 +189,24 @@ struct StaticBitMask {
 	}
 
 	FORCEINLINE constexpr auto for_each_set_bit(cpts::Invokable<usize> auto&& fn) const -> void {
+		#pragma unroll
 		for (usize i = 0; i < WORD_COUNT; ++i) {
 			for (Word mask = data[i]; mask; mask &= mask - 1) {
 				std::invoke(fn, math::count_trailing_zeros(mask) + i * WORD_BITS);
 			}
 		}
+	}
+
+	FORCEINLINE constexpr auto for_each_set_bit_with_break(cpts::InvokableReturns<bool, usize> auto&& fn) const -> bool {
+		#pragma unroll
+		for (usize i = 0; i < WORD_COUNT; ++i) {
+			for (Word mask = data[i]; mask; mask &= mask - 1) {
+				if (!std::invoke(fn, math::count_trailing_zeros(mask) + i * WORD_BITS)) {
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto hash() const -> usize {
@@ -190,6 +216,18 @@ struct StaticBitMask {
 			hash = math::hash_combine(hash, std::hash<Word>{}(data[i]));
 		}
 		return hash;
+	}
+
+	// Atomically clones each word so not atomic in it's entirety!
+	[[nodiscard]] auto atomic_clone(const std::memory_order memory_order = std::memory_order_acquire) const -> StaticBitMask {
+		StaticBitMask out{NO_INIT};
+
+		#pragma unroll
+		for (usize i = 0; i < WORD_COUNT; ++i) {
+			out.data[i] = reinterpret_cast<const Atomic<Word>&>(data[i]).load(memory_order);
+		}
+
+		return out;
 	}
 
 private:

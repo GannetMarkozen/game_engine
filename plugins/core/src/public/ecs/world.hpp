@@ -1,30 +1,64 @@
 #pragma once
 
 #include "archetype.hpp"
+#include "threading/thread_safe_types.hpp"
+
+namespace task { struct Task; }
+
+namespace ecs {
+struct App;
+struct World;
+
+struct SystemBase {
+	virtual ~SystemBase() = default;
+	virtual auto execute(World& world) -> void = 0;
+};
+
+enum class SystemState : u8 {
+	STANDBY,
+	WAITING,
+	EXECUTING,
+	COMPLETE,
+};
+
+struct World {
+	explicit World(const App& app);
+
+	auto run() -> void;
+
+	auto dispatch_event(const EventId event) -> void;
+
+	template <typename T>
+	FORCEINLINE auto dispatch_event() -> void {
+		dispatch_event(get_event_id<T>());
+	}
+
+	const App& app;
+
+	Array<UniquePtr<SystemBase>> systems;// Indexed via SystemId.
+
+	mutable RecursiveSharedMutex system_tasks_mutex;
+	Array<WeakPtr<task::Task>> system_tasks;// Indexed via SystemId. May be NULL or completed.
+
+	mutable RecursiveSharedMutex conflicting_executing_systems_mutex;
+	SystemMask conflicting_executing_systems;// Mask of systems currently running. Only potentially set for systems with other conflicting systems.
+
+	volatile bool is_pending_destruction = false;
+};
+}
+
+#if 0
+#pragma once
+
+#include "archetype.hpp"
 #include "bitmask.hpp"
 #include "threading/thread_safe_types.hpp"
 #include "bitmask.hpp"
+#include "system.hpp"
 
 namespace task {
 struct Task;
 }
-
-namespace ecs {
-struct DataRequirements {
-	[[nodiscard]] FORCEINLINE constexpr auto operator==(const DataRequirements& other) const -> bool {
-		return components == other.components;
-	}
-
-	CompMask components;
-};
-}
-
-template <>
-struct std::hash<ecs::DataRequirements> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::DataRequirements& value) const -> usize {
-		return std::hash<ecs::CompMask>{}(value.components);
-	}
-};
 
 namespace ecs {
 struct World {
@@ -36,16 +70,17 @@ struct World {
 
 	World();
 
+
 	// Thread-safe.
-	auto get_matching_archetypes_mask(const DataRequirements& requirements, BitMask<>& out_mask, const bool requires_locking = true) const -> void {
-		out_mask.reset();
+	auto get_matching_archetypes_mask(const DataRequirements& requirements, ArchetypeMask& out_mask, const bool requires_locking = true) const -> void {
+		out_mask.mask.reset();
 
 		UniqueSharedLock lock{requires_locking ? &archetypes_mutex : null};
 
 		// Bitwise AND all component archetype masks to find the archetypes that have ALL the components we
 		// are looking for, then iterate over the mask which should correspond to it's ArchetypeId.
 		requirements.components.for_each([&](const CompId comp) {
-			if (out_mask.is_empty()) {
+			if (out_mask.mask.is_empty()) {
 				out_mask = comp_archetypes_set[comp];
 			} else {
 				out_mask &= comp_archetypes_set[comp];
@@ -55,11 +90,11 @@ struct World {
 
 	// Thread-safe.
 	auto for_each_matching_archetype(const DataRequirements& requirements, cpts::Invokable<ArchetypeId> auto&& fn) -> void {
-		static thread_local constinit BitMask<> matching_archetypes_mask;
+		static thread_local constinit ArchetypeMask matching_archetypes_mask;
 		get_matching_archetypes_mask(requirements, matching_archetypes_mask);
 
-		matching_archetypes_mask.for_each_set_bit([&](const usize i) {
-			std::invoke(fn, ArchetypeId{static_cast<u16>(i)});
+		matching_archetypes_mask.for_each([&](const ArchetypeId id) {
+			std::invoke(fn, id);
 		});
 	}
 
@@ -101,7 +136,7 @@ struct World {
 
 			// Set component masks.
 			desc.comps.for_each([&](const CompId id) {
-				comp_archetypes_set[id].set(out.get_value());
+				comp_archetypes_set[id].add(out);
 			});
 
 			return out;
@@ -111,8 +146,9 @@ struct World {
 	auto enqueue_task(SharedPtr<task::Task> task, const DataRequirements& requirements) -> void;
 
 	mutable SharedMutex archetypes_mutex;
-	Array<BitMask<>> comp_archetypes_set;// Indexed via CompId. Map of mask of all archetypes storing this component.
+	Array<ArchetypeMask> comp_archetypes_set;// Indexed via CompId. Map of mask of all archetypes storing this component.
 	Array<ArchetypeInfo> archetypes;// Indexed via ArchetypeId. All archetypes. Indexes are stable. Write locked for adding new archetypes.
 	Map<ArchetypeDesc, ArchetypeId> archetype_desc_to_id_map;
 };
 }
+#endif

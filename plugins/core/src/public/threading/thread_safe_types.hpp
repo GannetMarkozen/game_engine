@@ -80,6 +80,34 @@ private:
 	T value;
 };
 
+template <typename T>
+using Atomic = std::atomic<T>;
+
+// Copy construction / assignment is not atomic! Mostly a hack to be able
+// to use atomics in a container.
+template <typename T>
+struct CopyableAtomic : public Atomic<T> {
+	using Atomic<T>::Atomic;
+
+	FORCEINLINE constexpr CopyableAtomic(const CopyableAtomic& other)
+		: CopyableAtomic{other.load(std::memory_order_relaxed)} {}
+
+	template <typename Other> requires std::convertible_to<Other, T>
+	FORCEINLINE constexpr CopyableAtomic(const Atomic<Other>& other)
+		: CopyableAtomic{static_cast<T>(other.load(std::memory_order_relaxed))} {}
+
+	FORCEINLINE constexpr auto operator=(const CopyableAtomic& other) -> CopyableAtomic& {
+		*this = other.load(std::memory_order_relaxed);
+		return *this;
+	}
+
+	template <typename Other> requires std::convertible_to<Other, T>
+	FORCEINLINE constexpr auto operator=(const Atomic<Other>& other) -> CopyableAtomic& {
+		*this = static_cast<T>(other.load(std::memory_order_relaxed));
+		return *this;
+	}
+};
+
 namespace cpts {
 template<typename T>
 concept Mutex = requires(T t) {
@@ -126,7 +154,7 @@ private:
 		} while (flag.load(std::memory_order_relaxed));
 	}
 
-	std::atomic<bool> flag = false;
+	Atomic<bool> flag = false;
 };
 
 // @NOTE: SharedMutex is generally faster.
@@ -181,7 +209,7 @@ struct SharedSpinLock {
 	}
 
 private:
-	std::atomic<i32> value = 0;// Positive for readers count. -1 for writer.
+	Atomic<i32> value = 0;// Positive for readers count. -1 for writer.
 };
 
 using Mutex = std::mutex;
@@ -222,8 +250,8 @@ struct RecursiveSharedMutex {
 
 private:
 	SharedMutex mutex;
-	std::atomic<std::thread::id> exclusive_owner;
-	std::atomic<u32> exclusive_recursion_count = 0;
+	Atomic<std::thread::id> exclusive_owner;
+	Atomic<u32> exclusive_recursion_count = 0;
 };
 
 // RAII mutex scope guard.

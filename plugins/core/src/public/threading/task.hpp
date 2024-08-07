@@ -25,21 +25,46 @@ struct alignas(CACHE_LINE_SIZE) Task {
 		return std::make_shared<Task>(FORWARD_AUTO(task), priority, thread, std::move(subsequents));
 	}
 
-	[[nodiscard]] FORCEINLINE auto has_completed() -> bool {
+	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY, Array<SharedPtr<Task>> subsequents = {}) -> SharedPtr<Task> {
+		return make([task = std::move(task)](const SharedPtr<Task>&) { task(); }, priority, thread, std::move(subsequents));
+	}
+
+	[[nodiscard]] FORCEINLINE auto has_completed() const -> bool {
 		return completed;
 	}
 
-	[[nodiscard]] FORCEINLINE auto has_prerequisites() -> bool {
+	[[nodiscard]] FORCEINLINE auto has_prerequisites() const -> bool {
 		return prerequisites_remaining.load(std::memory_order_relaxed) > 0;
+	}
+
+	// @NOTE: Not entirely thread-safe! Must guarantee that that the other task is not being executed during this!
+	auto add_subsequent(SharedPtr<Task> other) -> bool {
+		ASSERT(other);
+		ASSERT(!other->has_completed());
+		ASSERT(!other->enqueued || !other->has_prerequisites());
+
+		ScopeLock lock{subsequents_mutex};
+
+		if (has_completed()) {
+			return false;
+		}
+
+		++other->prerequisites_remaining;
+		subsequents.push_back(std::move(other));
+
+		return true;
 	}
 
 	Fn<void(const SharedPtr<Task>&)> fn;
 	Array<SharedPtr<Task>> subsequents;
-	std::atomic<u32> prerequisites_remaining = 0;
+	Atomic<u32> prerequisites_remaining = 0;
 	Mutex subsequents_mutex;
 	volatile bool completed = false;
 	Priority priority;
 	Thread thread;
+#if ASSERTIONS_ENABLED
+	bool enqueued = false;
+#endif
 };
 
 struct alignas(CACHE_LINE_SIZE) ThreadCondition {
@@ -49,17 +74,11 @@ struct alignas(CACHE_LINE_SIZE) ThreadCondition {
 	volatile bool pending_shutdown = false;
 };
 
-EXPORT_API inline CacheLinePadded<ConcurrentQueue<SharedPtr<Task>>> queues[utils::enum_count<Thread>()][utils::enum_count<Priority>()];
-
-alignas(CACHE_LINE_SIZE) EXPORT_API inline Array<UniquePtr<ThreadCondition>> thread_conditions;// Indexed via thread-id.
-
-alignas(CACHE_LINE_SIZE) EXPORT_API inline Array<std::thread> worker_threads;
-
-alignas(CACHE_LINE_SIZE) EXPORT_API inline std::atomic<u32> num_active_threads = 0;
-
-alignas(CACHE_LINE_SIZE) EXPORT_API inline std::atomic<u32> num_tasks_in_flight = 0;
-
-alignas(CACHE_LINE_SIZE) EXPORT_API inline bool pending_shutdown = false;
+inline CacheLinePadded<ConcurrentQueue<SharedPtr<Task>>> queues[utils::enum_count<Thread>()][utils::enum_count<Priority>()];
+alignas(CACHE_LINE_SIZE) inline Array<UniquePtr<ThreadCondition>> thread_conditions;// Indexed via thread-id.
+alignas(CACHE_LINE_SIZE) inline Array<std::thread> worker_threads;
+alignas(CACHE_LINE_SIZE) inline Atomic<u32> num_tasks_in_flight = 0;
+alignas(CACHE_LINE_SIZE) inline bool pending_shutdown = false;
 
 namespace impl {
 [[nodiscard]] FORCEINLINE auto get_this_thread_condition() -> ThreadCondition& {
@@ -200,7 +219,6 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 			if (--subsequent->prerequisites_remaining == 0) {
 				const auto thread = subsequent->thread;
 				const auto priority = subsequent->priority;
-
 				// Directly enqueue task.
 				queues[static_cast<u8>(thread)][static_cast<u8>(priority)]->enqueue(std::move(subsequent));
 
@@ -273,8 +291,18 @@ inline auto deinit() -> void {
 }
 
 inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY, const Span<const SharedPtr<Task>> prerequisites = {}, const bool should_wake_up_thread = true) -> void {
+	ASSERT(task);
+	ASSERT(!task->has_completed());
+	ASSERT(!task->enqueued);
+	ASSERT(!std::ranges::contains(prerequisites, task));
+
+#if ASSERTIONS_ENABLED
+	task->enqueued = true;
+#endif
+
 	// Add prerequisites.
-	u32 num_prerequisites = 0;
+	u32 num_prerequisites = task->prerequisites_remaining.load(std::memory_order_relaxed);
+
 	// Need to lock subsequents of prerequisites since we don't want them dispatching on another thread while we are modifying it.
 	for (const auto& prerequisite : prerequisites) {
 		prerequisite->subsequents_mutex.lock();
@@ -414,7 +442,7 @@ inline auto parallel_for_balanced(const usize count, cpts::Invokable<usize> auto
 	});
 }
 
-template <bool BALANCED = true>
+template <bool BALANCED = false>
 FORCEINLINE auto parallel_for(const usize count, cpts::Invokable<usize> auto&& fn) -> void {
 	if constexpr (BALANCED) {
 		parallel_for_balanced(count, FORWARD_AUTO(fn));

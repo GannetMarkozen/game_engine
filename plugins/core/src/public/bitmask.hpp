@@ -92,6 +92,19 @@ struct BitMask {
 		return out;
 	}
 
+	constexpr auto flip_bits() -> BitMask& {
+		for (Word& word : words) {
+			word = ~word;
+		}
+
+		// Zero out extraneous bits (if there are any).
+		if (const usize extraneous_bits = count % BITS_PER_WORD) {
+			words.back() &= std::numeric_limits<Word>::max() >> extraneous_bits;
+		}
+
+		return *this;
+	}
+
 	constexpr auto operator&=(const BitMask& other) -> BitMask& {
 		for (usize i = 0; i < std::min(words.size(), other.words.size()); ++i) {
 			words[i] &= other.words[i];
@@ -139,11 +152,7 @@ struct BitMask {
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr friend auto operator~(BitMask value) -> BitMask {
-		for (Word& word : value.words) {
-			word = ~word;
-		}
-
-		return value;
+		return value.flip_bits();
 	}
 
 private:

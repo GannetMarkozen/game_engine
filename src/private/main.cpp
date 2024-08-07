@@ -100,22 +100,126 @@ struct IsTriviallyRelocatable<TestStruct> {
 };
 
 #include "ecs/entity_list.hpp"
-#include "ecs/world.hpp"
+#include "threading/thread_safe_types.hpp"
+#include "ecs/app.hpp"
+
+
+#include <thread>
+#include <chrono>
+
+template <usize I> struct Group {};
+template <usize I> struct Comp {};
+
+std::atomic<u32> num_systems_running = 0;
+
+template <usize I>
+struct System {
+	[[nodiscard]] FORCEINLINE static constexpr auto get_access_requirements() {
+		return ecs::AccessRequirements{
+			.writes = ecs::CompMask::make<Comp<0>>(),
+		};
+	}
+
+	FORCEINLINE auto execute(ecs::World& world) -> void {
+		ASSERT(++num_systems_running == 1);
+
+		fmt::println("Executing System<{}> on thread {}. Count == {}!", I, thread::get_this_thread_id().get_value(), ++count);
+		std::this_thread::sleep_for(std::chrono::milliseconds{10});
+
+		if constexpr (I == 6) {
+			if (count == 1) {
+				world.is_pending_destruction = true;
+				task::pending_shutdown = true;
+			}
+		}
+
+		--num_systems_running;
+	}
+
+	i32 count = 0;
+};
 
 auto main() -> int {
+	#if 01
 	using namespace ecs;
 
-	BitMask<> mask;
-	mask.set(25);
-
-	BitMask<> mask1;
-	mask1.set(24).set(23).set(25).set(100);
-
-	auto combined = std::move(mask) | mask1;
-
-	combined.for_each_set_bit([&](const usize i) {
-		fmt::println("set {}", i);
+	App app;
+	#if 0
+	app.register_group<Group<1>>();
+	app.register_group<Group<2>>(Ordering{
+		.after = GroupMask::make<Group<1>>(),
 	});
+	app.register_group<Group<3>>(Ordering{
+		.after = GroupMask::make<Group<1>, Group<2>>(),
+	});
+	app.register_group<Group<4>>(Ordering{
+		.after = GroupMask::make<Group<2>>(),
+	});
+	app.register_group<Group<5>>(Ordering{
+		.before = GroupMask::make<Group<3>>(),
+	});
+	app.register_group<Group<6>>(Ordering{
+		.after = GroupMask::make<Group<1>, Group<2>, Group<3>, Group<4>, Group<5>>(),
+	});
+	#endif
+
+	const auto register_group = [&]<usize I>() {
+		if constexpr (I != 0) {
+			app.register_group<Group<I>>(Ordering{
+				.after = GroupMask::make<Group<I - 1>>(),
+			});
+		} else {
+			app.register_group<Group<I>>();
+		}
+	};
+
+	register_group.operator()<1>();
+	register_group.operator()<2>();
+	register_group.operator()<3>();
+	register_group.operator()<4>();
+	register_group.operator()<5>();
+	register_group.operator()<6>();
+
+	const auto register_system = [&]<usize I, typename Group>(const task::Thread thread = task::Thread::ANY) {
+		app.register_system<System<I>>(SystemDesc{
+			.group = get_group_id<Group>(),
+			.event = get_event_id<event::OnInit>(),
+			.thread = thread,
+		});
+	};
+
+	register_system.operator()<1, Group<1>>();
+	register_system.operator()<2, Group<2>>();
+	register_system.operator()<3, Group<3>>();
+	register_system.operator()<4, Group<4>>();
+	register_system.operator()<5, Group<5>>();
+	register_system.operator()<6, Group<5>>();
+
+	app.run();
+
+#elif 0
+
+	task::init();
+
+	volatile bool request_exit = false;
+
+	task::enqueue([&] {
+		fmt::println("Hello world!");
+		task::parallel_for(100, [&](const usize i) {
+			fmt::println("Executing {}", i);
+		});
+		request_exit = true;
+	});
+
+	task::do_work([&] { return request_exit; });
+
+	task::deinit();
+
+#else
+
+	ecs::World::do_something();
+
+#endif
 
 #if 0
 	usize num_entities_per_chunk;

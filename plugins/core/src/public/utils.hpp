@@ -256,4 +256,35 @@ struct ConditionalSwap<FN, A, B, Container<Ts...>> {
 		std::conditional_t<(utils::index_of_type<Ts>() == B), utils::TypeAtIndex<B, Ts...>, Ts>>...>;
 };
 }
+
+// Retrieves the function signature of any function, member-function, or callable.
+template <typename>
+struct FnSig;
+
+template <typename Return, typename... Args>
+struct FnSig<Return(*)(Args...)> {
+	using ReturnType = Return;
+	using ArgTypes = Tuple<Args...>;
+	using ClassType = void;
+	static constexpr bool CONST = false;
+};
+
+template <typename Return, typename Class, typename... Args>
+struct FnSig<Return(Class::*)(Args...)> {
+	using ReturnType = Return;
+	using ArgTypes = Tuple<Args...>;
+	using ClassType = Class;
+	static constexpr bool CONST = false;
+};
+
+template <typename Return, typename Class, typename... Args>
+struct FnSig<Return(Class::*)(Args...) const> {
+	using ReturnType = Return;
+	using ArgTypes = Tuple<Args...>;
+	using ClassType = Class;
+	static constexpr bool CONST = true;
+};
+
+template <typename T> requires requires { &T::operator(); }
+struct FnSig<T> : public FnSig<decltype(&T::operator())> {};
 }

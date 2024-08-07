@@ -6,11 +6,19 @@
 
 #if ASSERTIONS_ENABLED
 
+#if 0
 #define FATAL_ERRORF(format, ...) { \
-		utils::noinline_exec([](auto&&... args) { \
-			fmt::print(fmt::fg(fmt::color::red), format, FORWARD_AUTO(args)...); \
-			abort(); \
+		utils::noinline_exec([]<typename... Args>(Args&&... args) { \
+			fmt::print(fmt::fg(fmt::color::red), format, std::forward<Args>(args)...); \
 		}, ##__VA_ARGS__); \
+		abort(); \
+		UNREACHABLE; \
+	}
+#endif
+
+#define FATAL_ERRORF(format, ...) { \
+		fmt::print(fmt::fg(fmt::color::red), format, ##__VA_ARGS__); \
+		abort(); \
 		UNREACHABLE; \
 	}
 
@@ -42,7 +50,7 @@
 
 #define WARN(format, ...) { \
 		utils::noinline_exec([](auto&&... args) { \
-			fmt::print(fmt::fg(fmt::color::yellow), format, FORWARD_AUTO(args)...); \
+			fmt::print(fmt::fg(fmt::color::yellow), format "\n", FORWARD_AUTO(args)...); \
 		}, ##__VA_ARGS__); \
 	}
 
