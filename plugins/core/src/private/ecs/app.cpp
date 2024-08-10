@@ -1,4 +1,5 @@
 #include "ecs/app.hpp"
+#include "ecs/world.hpp"
 #include "threading/task.hpp"
 
 namespace ecs {
@@ -7,16 +8,23 @@ App::App() {
 	group_prerequisites.resize(get_num_groups());
 	group_systems.resize(get_num_groups());
 
+	comp_accessing_systems.resize(get_num_comps());
+
 	system_create_infos.resize(get_num_systems());
 	concurrent_conflicting_systems.resize(get_num_systems());
 
 	event_systems.resize(get_num_events());
 	event_system_prerequisites.resize(get_num_events());
 	event_root_groups.resize(get_num_events());
+
+	// Initialize GameFrame group by default.
+	register_group<group::GameFrame>(Ordering{
+		.within = GroupId::invalid_id(),
+	});
 }
 
 auto App::run(const usize num_worker_threads) -> void {
-	ASSERTF(!!~registered_groups, "Groups {} are implicitly instantiated but are not registered!", [&] {
+	ASSERTF(!~registered_groups, "Groups {} are implicitly instantiated but are not registered!", [&] {
 		String out;
 		(~registered_groups).for_each([&](const GroupId id) {
 			out += fmt::format("{}, ", TypeRegistry<GroupId>::get_type_info(id).name);
@@ -24,13 +32,18 @@ auto App::run(const usize num_worker_threads) -> void {
 		return out;
 	}());
 
-	ASSERTF((~registered_systems).mask.has_any_set_bits(), "Systems {} are implicitly instantiated but are not registered!", [&] {
+	ASSERTF(!~registered_systems, "Systems {} are implicitly instantiated but are not registered!", [&] {
 		String out;
 		(~registered_systems).for_each([&](const SystemId id) {
 			out += fmt::format("{}, ", TypeRegistry<SystemId>::get_type_info(id).name);
 		});
 		return out;
 	}());
+
+	// Clear prerequisites first as they will be regenerated based off of subsequents.
+	for (auto& prerequisites : group_prerequisites) {
+		prerequisites.mask.clear();
+	}
 
 	// Find all groups that have no prerequisites / no subsequents. First groups to be dispatched.
 	for (GroupId id = 0; id < get_num_groups(); ++id) {
@@ -81,6 +94,7 @@ auto App::run(const usize num_worker_threads) -> void {
 
 	// @TODO: Would've been simpler to do this calculation based-off of group_prerequisites rather than group_subsequents.
 	// Recursively prune extraneous dependencies and ensure there are no circular-dependencies.
+	// @TODO: This is way too expensive and causes way too much fragmentation. With 512 groups this starts to crash from operator new.
 	root_groups.for_each([&](const GroupId id) {
 		[&](this auto&& self, const GroupId id, const Array<GroupId>& prerequisites = {}) -> void {
 			const auto& subsequents = group_subsequents[id];
@@ -113,6 +127,10 @@ auto App::run(const usize num_worker_threads) -> void {
 	});
 
 	// Initialize group_prerequisites based off of group_subsequents.
+	for (auto& prerequisites : group_prerequisites) {
+		prerequisites = GroupMask{};
+	}
+
 	for (GroupId id = 0; id < get_num_groups(); ++id) {
 		group_subsequents[id].for_each([&](const GroupId subsequent) {
 			group_prerequisites[subsequent].add(id);
@@ -120,7 +138,7 @@ auto App::run(const usize num_worker_threads) -> void {
 	}
 
 	fmt::println("AFTER:");
-	print_subsequents();
+	//print_subsequents();
 
 	// Find prerequisite systems for event.
 	for (EventId id = 0; id < get_num_events(); ++id) {
@@ -192,9 +210,12 @@ auto App::run(const usize num_worker_threads) -> void {
 		if (!system_create_infos[a].desc.access_requirements.can_execute_concurrently_with(system_create_infos[b].desc.access_requirements)) {
 			concurrent_conflicting_systems[a].add(b);
 			concurrent_conflicting_systems[b].add(a);
+
+			#if 0
 			WARN("Systems {} and {} (groups {} and {}) have conflicting dependencies and no explicit ordering! Execution order will be non-deterministic!",
 				TypeRegistry<SystemId>::get_type_info(a).name, TypeRegistry<SystemId>::get_type_info(b).name,
 				TypeRegistry<GroupId>::get_type_info(system_create_infos[a].desc.group).name, TypeRegistry<GroupId>::get_type_info(system_create_infos[b].desc.group).name);
+			#endif
 		}
 	};
 
@@ -218,6 +239,14 @@ auto App::run(const usize num_worker_threads) -> void {
 				});
 			}
 		}
+	}
+
+	// Initialize comp_accessing_systems.
+	for (SystemId id = 0; id < get_num_systems(); ++id) {
+		const AccessRequirements& requirements = system_create_infos[id].desc.access_requirements;
+		(requirements.reads | requirements.writes | requirements.modifies).for_each([&](const CompId comp_id) {
+			comp_accessing_systems[comp_id].add(id);
+		});
 	}
 
 	task::init(num_worker_threads);

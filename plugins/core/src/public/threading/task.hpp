@@ -41,7 +41,8 @@ struct alignas(CACHE_LINE_SIZE) Task {
 	auto add_subsequent(SharedPtr<Task> other) -> bool {
 		ASSERT(other);
 		ASSERT(!other->has_completed());
-		ASSERT(!other->enqueued || !other->has_prerequisites());
+		ASSERTF(!other->enqueued || other->has_prerequisites(), "Can not add subsequent to a task that has the potential to be enqueued! other->enqueued == {}. other->has_prerequisites() == {}",
+			other->enqueued, other->has_prerequisites());
 
 		ScopeLock lock{subsequents_mutex};
 

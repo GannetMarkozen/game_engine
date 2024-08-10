@@ -102,6 +102,8 @@ struct IsTriviallyRelocatable<TestStruct> {
 #include "ecs/entity_list.hpp"
 #include "threading/thread_safe_types.hpp"
 #include "ecs/app.hpp"
+#include "ecs/world.hpp"
+#include "ecs/query.hpp"
 
 
 #include <thread>
@@ -110,33 +112,76 @@ struct IsTriviallyRelocatable<TestStruct> {
 template <usize I> struct Group {};
 template <usize I> struct Comp {};
 
-std::atomic<u32> num_systems_running = 0;
+Atomic<u32> count = 0;
+
+struct SomeComp {
+	String name = "Hello there I am SomeComp";
+};
+
 
 template <usize I>
 struct System {
 	[[nodiscard]] FORCEINLINE static constexpr auto get_access_requirements() {
 		return ecs::AccessRequirements{
-			.writes = ecs::CompMask::make<Comp<0>>(),
+			//.writes = ecs::CompMask::make<SomeComp>(),
+			.reads = ecs::CompMask::make<SomeComp>(),
 		};
 	}
 
 	FORCEINLINE auto execute(ecs::World& world) -> void {
-		ASSERT(++num_systems_running == 1);
+		++this_count;
+		const auto current_count = ++count;
+		fmt::println("Executing System<{}> on thread {}. Count == {}! ThisCount == {}!", I, thread::get_this_thread_id().get_value(), current_count, this_count);
+		//std::this_thread::sleep_for(std::chrono::milliseconds{10});
 
-		fmt::println("Executing System<{}> on thread {}. Count == {}!", I, thread::get_this_thread_id().get_value(), ++count);
-		std::this_thread::sleep_for(std::chrono::milliseconds{10});
-
-		if constexpr (I == 6) {
-			if (count == 1) {
-				world.is_pending_destruction = true;
-				task::pending_shutdown = true;
-			}
+		if (current_count == 13) {
+			world.is_pending_destruction = true;
+			task::pending_shutdown = true;
 		}
 
-		--num_systems_running;
+		usize some_count = 0;
+		query.for_each(world, [&](const Entity& entity, const SomeComp& comp) {
+			fmt::println("{}: {}: {} {}", ++some_count, static_cast<const void*>(&comp), comp.name, entity);
+		});
 	}
 
-	i32 count = 0;
+	u32 this_count = 0;
+
+	ecs::Query<SomeComp> query;
+};
+
+u32 some_struct_construct_count = 0;
+u32 some_struct_destruct_count = 0;
+struct PrintStruct {
+	PrintStruct() {
+		fmt::println("Constructed {} at {}", ++some_struct_construct_count, static_cast<void*>(this));
+	}
+
+	~PrintStruct() {
+		fmt::println("Destructed {} at {}", ++some_struct_destruct_count, static_cast<void*>(this));
+	}
+
+	Array<u32> things = {10, 20, 30, 40, 50};
+};
+
+struct ConstructEntitiesSystem {
+	[[nodiscard]] static auto get_access_requirements() {
+		return ecs::AccessRequirements{
+			.modifies = ecs::CompMask::make<SomeComp, Comp<0>>(),
+		};
+	}
+
+	FORCEINLINE auto execute(ecs::World& world) -> void {
+		fmt::println("Gonna spawn entities!");
+
+		std::this_thread::sleep_for(std::chrono::seconds{2});
+
+#if 01
+		const auto a = world.spawn(SomeComp{}, Comp<0>{});
+
+		const auto b = world.spawn(SomeComp{});
+#endif
+	}
 };
 
 auto main() -> int {
@@ -173,13 +218,6 @@ auto main() -> int {
 		}
 	};
 
-	register_group.operator()<1>();
-	register_group.operator()<2>();
-	register_group.operator()<3>();
-	register_group.operator()<4>();
-	register_group.operator()<5>();
-	register_group.operator()<6>();
-
 	const auto register_system = [&]<usize I, typename Group>(const task::Thread thread = task::Thread::ANY) {
 		app.register_system<System<I>>(SystemDesc{
 			.group = get_group_id<Group>(),
@@ -188,14 +226,67 @@ auto main() -> int {
 		});
 	};
 
+	{
+		//GroupMultiArray<PrintStruct, SomeStruct, PrintStruct, PrintStruct, SomeStruct, SomeStruct, u32> something;
+	}
+
+#if 0
+	register_group.operator()<1>();
+	register_group.operator()<2>();
+	register_group.operator()<3>();
+	register_group.operator()<4>();
+	register_group.operator()<5>();
+	register_group.operator()<6>();
+
 	register_system.operator()<1, Group<1>>();
 	register_system.operator()<2, Group<2>>();
 	register_system.operator()<3, Group<3>>();
 	register_system.operator()<4, Group<4>>();
 	register_system.operator()<5, Group<5>>();
 	register_system.operator()<6, Group<5>>();
+#endif
+
+#if 1
+	[&]<usize I>(this auto&& self) -> void {
+		static constexpr usize GROUP_INTERVAL = 100;
+		if constexpr (I % GROUP_INTERVAL == 0) {
+			register_group.operator()<I / GROUP_INTERVAL>();
+		}
+		register_system.operator()<I, Group<I / GROUP_INTERVAL>>();
+		if constexpr (I < 12) {
+			self.template operator()<I + 1>();
+		}
+	}.operator()<0>();
+#endif
+
+#if 1
+	app.register_group<Group<10>>(Ordering{
+		.before = GroupMask::make<Group<0>>(),
+	});
+
+	app.register_system<ConstructEntitiesSystem>(SystemDesc{
+		.group = get_group_id<Group<10>>(),
+		.event = get_event_id<event::OnInit>(),
+	});
+#endif
+
+	const auto start = std::chrono::high_resolution_clock::now();
 
 	app.run();
+
+	GroupArray<u32> things;
+	for (GroupId id = 0; id < get_num_groups(); ++id) {
+		things[id] = id.get_value();
+	}
+
+	GroupArray<u32> other_things = std::move(things);
+	fmt::println("Num groups == {}", get_num_groups());
+	fmt::println("{}", other_things[GroupId{get_num_groups() - 1}]);
+
+	const auto end = std::chrono::high_resolution_clock::now();
+
+	fmt::println("FINISHED in {}", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+	std::this_thread::sleep_for(std::chrono::seconds{2});
 
 #elif 0
 

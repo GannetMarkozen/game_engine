@@ -83,31 +83,6 @@ private:
 template <typename T>
 using Atomic = std::atomic<T>;
 
-// Copy construction / assignment is not atomic! Mostly a hack to be able
-// to use atomics in a container.
-template <typename T>
-struct CopyableAtomic : public Atomic<T> {
-	using Atomic<T>::Atomic;
-
-	FORCEINLINE constexpr CopyableAtomic(const CopyableAtomic& other)
-		: CopyableAtomic{other.load(std::memory_order_relaxed)} {}
-
-	template <typename Other> requires std::convertible_to<Other, T>
-	FORCEINLINE constexpr CopyableAtomic(const Atomic<Other>& other)
-		: CopyableAtomic{static_cast<T>(other.load(std::memory_order_relaxed))} {}
-
-	FORCEINLINE constexpr auto operator=(const CopyableAtomic& other) -> CopyableAtomic& {
-		*this = other.load(std::memory_order_relaxed);
-		return *this;
-	}
-
-	template <typename Other> requires std::convertible_to<Other, T>
-	FORCEINLINE constexpr auto operator=(const Atomic<Other>& other) -> CopyableAtomic& {
-		*this = static_cast<T>(other.load(std::memory_order_relaxed));
-		return *this;
-	}
-};
-
 namespace cpts {
 template<typename T>
 concept Mutex = requires(T t) {

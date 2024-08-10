@@ -1,7 +1,8 @@
 #pragma once
 
 #include "ids.hpp"
-#include "ecs/world.hpp"
+#include "system_base.hpp"
+#include "world.hpp"
 #include "utils.hpp"
 #include "defaults.hpp"
 #include "threading/task.hpp"
@@ -17,6 +18,7 @@ concept Plugin = requires (T t, App& app) {
 }
 
 struct Ordering {
+	GroupId within = get_group_id<group::GameFrame>();
 	GroupMask after;// Prerequisites.
 	GroupMask before;// Subsequents.
 };
@@ -37,19 +39,52 @@ struct App {
 
 	App();
 
-	[[nodiscard]] FORCEINLINE static auto build() -> App { return App{}; }
+	[[nodiscard]] FORCEINLINE static auto build() -> App { return {}; }
 
 	auto register_group(const GroupId group, Ordering ordering) -> App& {
 #if ASSERTIONS_ENABLED
 		ASSERTF(!registered_groups.has(group), "Double registered group {}!", TypeRegistry<GroupId>::get_type_info(group).name);
+		ASSERTF(!ordering.within.is_valid() || registered_groups.has(ordering.within), "The group that {} is within {} must be registered first!", TypeRegistry<GroupId>::get_type_info(group).name, TypeRegistry<GroupId>::get_type_info(ordering.within).name);
 		registered_groups.add(group);
 #endif
 		ASSERTF(!ordering.after.has(group) && !ordering.before.has(group), "Can not schedule group before or after self: {}!", TypeRegistry<GroupId>::get_type_info(group).name);
 		ASSERTF(!(ordering.after & ordering.before).mask.has_any_set_bits(), "Can not schedule both before an after another group for group {}!", TypeRegistry<GroupId>::get_type_info(group).name);
 
+#if 0
+		if (ordering.within.is_valid()) {
+			ordering.before |= group_subsequents[ordering.within];
+			ordering.after |= group_prerequisites[ordering.within];
+		}
+
 		group_subsequents[group] |= ordering.before;
+		ordering.before.for_each([&](const GroupId subsequent) {
+			group_subsequents[subsequent].add(group);
+		});
+
+		group_prerequisites[group] |= ordering.after;
 		ordering.after.for_each([&](const GroupId prerequisite) {
 			group_subsequents[prerequisite].add(group);
+		});
+
+		return *this;
+#endif
+
+		if (ordering.within.is_valid()) {
+			ordering.before |= group_subsequents[ordering.within];
+			ordering.after |= group_prerequisites[ordering.within];
+		}
+
+		group_subsequents[group] |= ordering.before;
+		group_prerequisites[group] |= ordering.after;
+
+		ordering.before.for_each([&](const GroupId id) {
+			//group_subsequents[id].add(group);
+			group_prerequisites[id].add(group);
+		});
+
+		ordering.after.for_each([&](const GroupId id) {
+			//group_prerequisites[id].add(group);
+			group_subsequents[id].add(group);
 		});
 
 		return *this;
@@ -104,6 +139,8 @@ struct App {
 	Array<GroupMask> group_subsequents;// Indexed via GroupId.
 	Array<GroupMask> group_prerequisites;// Indexed via GroupId.
 	Array<SystemMask> group_systems;// Indexed via GroupId.
+
+	Array<SystemMask> comp_accessing_systems;// Indexed via CompId. All systems requiring access to this comp.
 
 	Array<SystemInfo> system_create_infos;// Indexed via SystemId.
 	Array<SystemMask> concurrent_conflicting_systems;// Indexed via SystemId.

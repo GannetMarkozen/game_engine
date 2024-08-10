@@ -60,7 +60,7 @@ struct EntityList {
 	}
 
 	auto remove_entity(const Entity entity) -> void {
-		ASSERTF(is_valid_entity(entity), "Attempted to remove invalid entity! index: {}, version: {}", entity.get_index(), entity.get_version());
+		ASSERTF(is_entity_valid(entity), "Attempted to remove invalid entity! index: {}, version: {}", entity.get_index(), entity.get_version());
 
 		if (!first_free_entry || entity.get_index() < *first_free_entry) {
 			new(&entries[entity.get_index()]) Optional<usize>{first_free_entry};
@@ -99,7 +99,7 @@ struct EntityList {
 		return initialized_mask[index / 64] & 1 << index % 64;
 	}
 
-	[[nodiscard]] FORCEINLINE auto is_valid_entity(const Entity entity) const -> bool {
+	[[nodiscard]] FORCEINLINE auto is_entity_valid(const Entity entity) const -> bool {
 		return is_valid_index(entity.get_index()) && versions[entity.get_index()] == entity.get_version() && is_initialized(entity.get_index());
 	}
 

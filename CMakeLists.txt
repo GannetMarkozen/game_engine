@@ -110,7 +110,7 @@ add_subdirectory(plugins/core)
 
 target_link_libraries(game_engine
     # Third-party.
-	PRIVATE glm::glm
+	#PRIVATE glm::glm
     PRIVATE flecs_static
 	PRIVATE Vulkan::Vulkan
 

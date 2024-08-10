@@ -2,20 +2,30 @@
 
 #include "type_registry.hpp"
 
-DECLARE_NAMESPACED_INT_ALIAS(ecs, CompId, u8);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, ArchetypeId, u8);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, SystemId, u8);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, GroupId, u8);
+DECLARE_NAMESPACED_INT_ALIAS(ecs, CompId, u16);
+DECLARE_NAMESPACED_INT_ALIAS(ecs, ArchetypeId, u32);
+DECLARE_NAMESPACED_INT_ALIAS(ecs, SystemId, u16);
+DECLARE_NAMESPACED_INT_ALIAS(ecs, GroupId, u16);
 DECLARE_NAMESPACED_INT_ALIAS(ecs, EventId, u8);
 
 namespace ecs {
 struct World;
 
-using CompMask = StaticTypeMask<CompId, 128>;
+using CompMask = StaticTypeMask<CompId, 512>;
 using ArchetypeMask = TypeMask<ArchetypeId>;// Dynamic mask because the number of archetypes is unpredictable at runtime.
-using SystemMask = StaticTypeMask<SystemId, 128>;
-using GroupMask = StaticTypeMask<GroupId, 64>;
+using SystemMask = StaticTypeMask<SystemId, 512>;
+using GroupMask = StaticTypeMask<GroupId, 512>;
 using EventMask = StaticTypeMask<EventId, 64>;
+
+template <typename T> using CompArray = TypeArray<CompId, T>;
+template <typename T> using SystemArray = TypeArray<SystemId, T>;
+template <typename T> using GroupArray = TypeArray<GroupId, T>;
+template <typename T> using EventArray = TypeArray<EventId, T>;
+
+template <typename... Ts> using CompMultiArray = TypeMultiArray<CompId, Ts...>;
+template <typename... Ts> using SystemMultiArray = TypeMultiArray<SystemId, Ts...>;
+template <typename... Ts> using GroupMultiArray = TypeMultiArray<GroupId, Ts...>;
+template <typename... Ts> using EventMultiArray = TypeMultiArray<EventId, Ts...>;
 
 struct AccessRequirements {
 	[[nodiscard]] FORCEINLINE constexpr auto can_execute_concurrently_with(const AccessRequirements& other) const -> bool {

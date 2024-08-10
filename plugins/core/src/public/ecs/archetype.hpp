@@ -41,6 +41,8 @@ struct EXPORT_API Archetype {
 	};
 	static_assert(sizeof(Chunk) == BYTES_PER_CHUNK + sizeof(UniquePtr<Chunk>));
 
+	NON_COPYABLE(Archetype);
+
 	explicit Archetype(const ArchetypeDesc& in_description);
 
 	~Archetype();
@@ -239,6 +241,55 @@ struct EXPORT_API Archetype {
 			}
 		});
 	}
+
+	template <typename T> requires (!std::is_empty_v<T>)
+	[[nodiscard]] auto get(Chunk& chunk, const usize index_within_chunk) -> T& {
+		const auto it = std::ranges::find(comps, get_comp_id<T>(), &CompInfo::id);
+		ASSERTF(it != comps.end(), "Component {} does not exist on archetype with composition {}!",
+			utils::get_type_name<T>(), [&] {
+				String out;
+				description.comps.for_each([&](const CompId id) {
+					out += fmt::format("{}, ", TypeRegistry<CompId>::get_type_info(id).name);
+				});
+				return out;
+			}());
+
+		return *reinterpret_cast<T*>(get_comp_data(*it, chunk, index_within_chunk));
+	}
+
+	template <>
+	[[nodiscard]] auto get<Entity>(Chunk& chunk, const usize index_within_chunk) -> Entity& {
+		return *reinterpret_cast<Entity*>(&chunk.data[entity_offset_within_chunk + index_within_chunk * sizeof(Entity)]);
+	}
+
+	template <typename... Ts> requires (sizeof...(Ts) > 0)
+	[[nodiscard]] auto get(const usize index) -> Tuple<Ts&...> {
+		Chunk& chunk = get_chunk(index / num_entities_per_chunk);
+		const usize index_within_chunk = index % num_entities_per_chunk;
+		return {get<Ts>(chunk, index_within_chunk)...};
+	}
+
+#if 0
+	template <typename T> requires (!std::is_empty_v<T>)
+	[[nodiscard]] auto get(const usize index) -> T& {
+		const auto it = std::ranges::find(comps, get_comp_id<T>(), &CompInfo::id);
+		ASSERTF(it != comps.end(), "Component {} does not exist on archetype with composition {}!",
+			utils::get_type_name<T>(), [&] {
+				String out;
+				description.comps.for_each([&](const CompId id) {
+					out += fmt::format("{}, ", TypeRegistry<CompId>::get_type_info(id).name);
+				});
+				return out;
+			}());
+
+		return *reinterpret_cast<T*>(get_comp_data(*it, get_chunk(index / num_entities_per_chunk), index % num_entities_per_chunk));
+	}
+
+	template <>
+	[[nodiscard]] auto get<Entity>(const usize index) -> Entity& {
+		return *reinterpret_cast<Entity*>(&get_chunk(index / num_entities_per_chunk).data[entity_offset_within_chunk + (index % num_entities_per_chunk) * sizeof(Entity)]);
+	}
+#endif
 
 	usize num_entities = 0;
 	usize num_entities_per_chunk;

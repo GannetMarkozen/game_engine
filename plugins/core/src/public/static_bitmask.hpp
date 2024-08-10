@@ -19,7 +19,7 @@ struct StaticBitMask {
 	static constexpr usize WORD_BITS = sizeof(Word) * 8;
 
 	// Number of words.
-	static constexpr usize WORD_COUNT = math::divide_and_round_up(N, sizeof(Word) * 8);
+	static constexpr usize WORD_COUNT = math::divide_and_round_up(N, WORD_BITS);
 
 	FORCEINLINE constexpr StaticBitMask() {
 		if consteval {
@@ -54,6 +54,16 @@ struct StaticBitMask {
 			}
 		}
 		return true;
+	}
+
+	FORCEINLINE constexpr auto clear() -> void {
+		if consteval {
+			for (auto& word : data) {
+				word = 0;
+			}
+		} else {
+			memset(data.data(), 0, WORD_COUNT * sizeof(Word));
+		}
 	}
 
 	[[nodiscard]] FORCEINLINE constexpr auto get_data(this auto&& self) {
@@ -144,7 +154,7 @@ struct StaticBitMask {
 
 	template <typename Self>
 	[[nodiscard]] FORCEINLINE constexpr auto get_word(this Self&& self, const std::integral auto index) -> decltype(auto) {
-		ASSERTF(index > 0 && index < WORD_COUNT, "Index {} out of range {}!", index, WORD_COUNT);
+		ASSERTF(index >= 0 && index < WORD_COUNT, "Index {} out of range {}!", index, WORD_COUNT);
 		return (std::forward_like<Self>(self.data[index]));
 	}
 
@@ -188,18 +198,18 @@ struct StaticBitMask {
 		return NULL_OPTIONAL;
 	}
 
-	FORCEINLINE constexpr auto for_each_set_bit(cpts::Invokable<usize> auto&& fn) const -> void {
-		#pragma unroll
-		for (usize i = 0; i < WORD_COUNT; ++i) {
+	FORCEINLINE constexpr auto for_each_set_bit(cpts::Invokable<usize> auto&& fn, const usize word_count = WORD_COUNT) const -> void {
+		// @NOTE: This is failing to unroll for some reason. Could force unroll it with some template stuff.
+		for (usize i = 0; i < std::min(word_count, WORD_COUNT); ++i) {
 			for (Word mask = data[i]; mask; mask &= mask - 1) {
 				std::invoke(fn, math::count_trailing_zeros(mask) + i * WORD_BITS);
 			}
 		}
 	}
 
-	FORCEINLINE constexpr auto for_each_set_bit_with_break(cpts::InvokableReturns<bool, usize> auto&& fn) const -> bool {
+	FORCEINLINE constexpr auto for_each_set_bit_with_break(cpts::InvokableReturns<bool, usize> auto&& fn, const usize word_count = WORD_COUNT) const -> bool {
 		#pragma unroll
-		for (usize i = 0; i < WORD_COUNT; ++i) {
+		for (usize i = 0; i < std::min(word_count, WORD_COUNT); ++i) {
 			for (Word mask = data[i]; mask; mask &= mask - 1) {
 				if (!std::invoke(fn, math::count_trailing_zeros(mask) + i * WORD_BITS)) {
 					return true;
