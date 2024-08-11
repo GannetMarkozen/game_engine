@@ -123,7 +123,7 @@ enum class Type : u8 {
 
 struct Attribute {
 	StringView name;
-	Any value;
+	//Any value;
 };
 
 struct Member {
@@ -272,7 +272,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 	.destruct = [](void* dst, const usize count) {
 		if constexpr (std::is_destructible_v<T> && !std::is_trivially_destructible_v<T>) {
 			for (usize i = 0; i < count; ++i) {
-				static_cast<T*>(dst)[i].~T();
+				std::destroy_at(&static_cast<T*>(dst)[i]);
 			}
 		}
 	},
@@ -329,7 +329,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 						utils::visit(Members::ATTRIBUTES, [&]<usize N, typename ValueType>(const ::Attribute<N, ValueType>& attribute) {
 							out.push_back(Attribute{
 								.name = attribute.name.view(),
-								.value{attribute.value},
+								//.value{attribute.value},
 							});
 						});
 						return out;
@@ -379,6 +379,7 @@ FORCEINLINE Any::Any(T&& value) {
 FORCEINLINE Any::~Any() {
 	if (type_info) {
 		type_info->destruct(data, 1);
+		fmt::println("Deallocing {}", type_info->name);
 		mem::dealloc(data, type_info->alloc_alignment);
 	}
 }

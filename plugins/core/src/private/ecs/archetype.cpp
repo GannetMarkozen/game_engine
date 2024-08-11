@@ -26,7 +26,19 @@ Archetype::Archetype(const ArchetypeDesc& in_description)
 		return get_type_info(a.id).alignment > get_type_info(b.id).alignment;
 	});
 
+	// Keep recalculating offsets until alignment / size requirements are met. Not necessarily optimal.
+	do {
+		usize aggregate_offset = 0;
+		for (CompInfo& comp : comps) {
+			comp.offset_within_chunk = aggregate_offset;
+			aggregate_offset += get_type_info(comp.id).size * num_entities_per_chunk;
+		}
+
+		entity_offset_within_chunk = math::align(aggregate_offset, alignof(Entity));
+	} while (entity_offset_within_chunk + num_entities_per_chunk * sizeof(Entity) > BYTES_PER_CHUNK);
+
 	// Keep testing alignment constraints and shrinking the number of entities until met.
+	#if 0
 	while (true) {
 		usize aggregate_alignment_padding = 0;
 		for (usize i = 1; i < comps.size(); ++i) {
@@ -39,7 +51,7 @@ Archetype::Archetype(const ArchetypeDesc& in_description)
 		}
 
 		const usize previous_offset = comps.back().offset_within_chunk;
-		const usize unaligned_offset = previous_offset + get_type_info(comps.back().id).size;
+		const usize unaligned_offset = previous_offset + get_type_info(comps.back().id).size * num_entities_per_chunk;
 		entity_offset_within_chunk = math::align(unaligned_offset, alignof(Entity));
 		aggregate_alignment_padding += entity_offset_within_chunk - unaligned_offset;
 
@@ -52,6 +64,7 @@ Archetype::Archetype(const ArchetypeDesc& in_description)
 			--num_entities_per_chunk;
 		}
 	}
+	#endif
 }
 
 Archetype::~Archetype() {
@@ -61,6 +74,8 @@ Archetype::~Archetype() {
 			if (!!(type_info.flags & rtti::Flags::TRIVIAL)) {
 				continue;
 			}
+
+			fmt::println("Destructing {} at {}", type_info.name, static_cast<void*>(chunk.data));
 
 			type_info.destruct(&chunk.data[comp.offset_within_chunk], count);
 		}

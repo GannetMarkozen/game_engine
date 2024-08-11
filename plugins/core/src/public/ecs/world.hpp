@@ -99,7 +99,7 @@ struct World {
 	}
 #endif
 
-	auto internal_spawn_entities(const ArchetypeDesc& desc, const usize count, ::cpts::Invokable<const Array<Entity>&, Archetype&, usize> auto&& on_construction_fn, Array<Entity>* optional_out_entities = null,
+	NOINLINE auto internal_spawn_entities(const ArchetypeDesc& desc, const usize count, ::cpts::Invokable<const Array<Entity>&, Archetype&, usize> auto&& on_construction_fn, Array<Entity>* optional_out_entities = null,
 		const task::Priority construction_task_priority = task::Priority::HIGH, const task::Thread construction_task_thread = task::Thread::ANY) -> void {
 		ASSERT(count > 0);
 
@@ -211,7 +211,7 @@ struct World {
 	}
 
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
-	auto spawn(Comps&&... comps) -> Entity {
+	auto spawn_entity(Comps&&... comps) -> Entity {
 		static const ArchetypeDesc DESC{
 			.comps = CompMask::make<std::decay_t<Comps>...>(),
 		};
@@ -235,6 +235,66 @@ struct World {
 		}, &out_entities);
 
 		return out_entities[0];
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entities(usize count, Comps&&... comps) -> Array<Entity> {
+		static const ArchetypeDesc DESC{
+			.comps = CompMask::make<std::decay_t<Comps>...>(),
+		};
+
+		Array<Entity> out_entities;
+		internal_spawn_entities(DESC, count, [comps = utils::make_tuple(std::forward<Comps>(comps)...), count](const Array<Entity>& entities, Archetype& archetype, const usize index) {
+			static constexpr usize NUM_NON_TAG_TYPES = [] {
+				usize count = 0;
+				((count += !std::is_empty_v<std::decay_t<Comps>>), ...);
+				return count;
+			}();
+
+			static constexpr auto GET_OFFSET_INDEX = []<typename T>() constexpr -> usize {
+				static_assert(utils::contains_type<T, Comps...>());
+
+				usize index = 0;
+				utils::make_index_sequence_param_pack<utils::index_of_type<T, Comps...>()>([&]<usize... Is>() {
+					((index += !std::is_empty_v<std::decay_t<utils::TypeAtIndex<Is, Comps...>>>), ...);
+				});
+				return index;
+			};
+
+			usize offsets[NUM_NON_TAG_TYPES];
+
+			([&] {
+				if constexpr (!std::is_empty_v<std::decay_t<Comps>>) {
+					const auto it = std::ranges::find(archetype.comps, get_comp_id<std::decay_t<Comps>>(), &Archetype::CompInfo::id);
+					ASSERTF(it != archetype.comps.end(), "Component {} does not exist on Archetype!", utils::get_type_name<std::decay_t<Comps>>());
+
+					offsets[GET_OFFSET_INDEX.template operator()<Comps>()] = it->offset_within_chunk;
+				}
+			}(), ...);
+
+			usize current_count = 0;
+			archetype.for_each_chunk_in_range(index, count, [&](Archetype::Chunk& chunk, const usize start, const usize count) {
+				([&] {
+					using Comp = std::decay_t<Comps>;
+					if constexpr (!std::is_empty_v<Comp>) {
+						Comp* dst = reinterpret_cast<Comp*>(&chunk.data[offsets[GET_OFFSET_INDEX.template operator()<Comps>()]] + start * sizeof(Comp));
+						for (usize i = 0; i < count; ++i) {
+							//std::construct_at(dst + i, comps.template get<utils::index_of_type<Comps, Comps...>()>());
+							std::construct_at(dst + i, std::get<utils::index_of_type<Comps, Comps...>()>(comps));
+						}
+					}
+				}(), ...);
+
+				Entity* dst = reinterpret_cast<Entity*>(&chunk.data[archetype.entity_offset_within_chunk + start * sizeof(Entity)]);
+				static_assert(std::is_trivially_copy_constructible_v<Entity>);
+
+				memcpy(dst, &entities[current_count], count * sizeof(Entity));
+
+				current_count += count;
+			});
+		}, &out_entities);
+
+		return out_entities;
 	}
 
 	[[nodiscard]] FORCEINLINE auto reserve_entity() -> Entity {

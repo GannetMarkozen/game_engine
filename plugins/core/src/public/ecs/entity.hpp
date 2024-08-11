@@ -62,6 +62,6 @@ struct fmt::formatter<Entity> {
 
 	template <typename FmtContext>
 	auto format(const Entity entity, FmtContext& context) {
-		return fmt::format_to(context.out(), "index: {}, version: {}", entity.get_index(), entity.get_version());
+		return fmt::format_to(context.out(), "Entity{{ .index = {}, .version = {} }}", entity.get_index(), entity.get_version());
 	}
 };

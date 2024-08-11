@@ -36,6 +36,9 @@ struct EXPORT_API Archetype {
 
 	// @NOTE: May be optimal to make chunks grow exponentially as more are added (will make things a lot more complicated though).
 	struct Chunk {
+		constexpr Chunk() = default;
+		NON_COPYABLE(Chunk);
+
 		alignas(CACHE_LINE_SIZE) u8 data[BYTES_PER_CHUNK];
 		UniquePtr<Chunk> next = null;
 	};
@@ -254,7 +257,8 @@ struct EXPORT_API Archetype {
 				return out;
 			}());
 
-		return *reinterpret_cast<T*>(get_comp_data(*it, chunk, index_within_chunk));
+		//return *reinterpret_cast<T*>(get_comp_data(*it, chunk, index_within_chunk));
+		return *reinterpret_cast<T*>(&chunk.data[it->offset_within_chunk + index_within_chunk * sizeof(T)]);
 	}
 
 	template <>

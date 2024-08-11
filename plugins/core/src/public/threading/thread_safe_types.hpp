@@ -488,14 +488,262 @@ struct RWLocked {
 
 	//~
 	// Unsafe.
-	FORCEINLINE constexpr auto get() -> T& { return value; }
-	FORCEINLINE constexpr auto get() const -> const T& { return value; }
+	[[nodiscard]] FORCEINLINE constexpr auto get() -> T& { return value; }
+	[[nodiscard]] FORCEINLINE constexpr auto get() const -> const T& { return value; }
 
-	FORCEINLINE constexpr auto get_mutex() -> SharedMutexType& { return mutex; }
-	FORCEINLINE constexpr auto get_mutex() const -> const SharedMutexType& { return mutex; }
+	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() -> SharedMutexType& { return mutex; }
+	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() const -> const SharedMutexType& { return mutex; }
 	//~
 
 private:
 	T value;
 	mutable SharedMutexType mutex;
+};
+
+// Atomic multiple producer single consume linked-list.
+template <typename T>
+struct MpscList {
+	struct Node {
+		T value;
+		Node* next = null;
+	};
+
+	// NOT thread-safe.
+	constexpr ~MpscList() {
+		Node* node = head.load(std::memory_order_relaxed);
+		while (node) {
+			Node* old_node = node;
+			node = node->next;
+
+			delete old_node;
+		}
+	}
+
+	// Thread-safe.
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr auto enqueue(Args&&... args) -> T& {
+		Node* new_head = new Node{
+			.value{std::forward<Args>(args)...},
+			.next = head.load(std::memory_order_relaxed),
+		};
+
+		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_relaxed, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+
+		return new_head->value;
+	}
+
+	// Thread-safe.
+	[[nodiscard]] constexpr auto find(cpts::InvokableReturns<bool, const T&> auto&& predicate) -> T* {
+		Node* node = head.load(std::memory_order_relaxed);
+		do {
+			if (!node) {
+				break;
+			}
+
+			if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
+				return &node->value;
+			}
+		} while ((node = node->next));
+
+		return null;
+	}
+
+	// NOT thread-safe.
+	[[nodiscard]] constexpr auto find_and_dequeue(cpts::InvokableReturns<bool, const T&> auto&& predicate) -> Optional<T> {
+		Node* node = head.load(std::memory_order_relaxed);
+		Node* parent = null;
+		do {
+			if (!node) {
+				break;
+			}
+
+			if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
+				if (parent) {
+					parent->next = node->next;
+				} else {
+					head = node->next;
+				}
+
+				Optional<T> out{std::move(node->value)};
+				delete node;
+
+				return out;
+			}
+			parent = node;
+		} while ((node = node->next));
+
+		return NULL_OPTIONAL;
+	}
+
+	// Thread-safe.
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	[[nodiscard]] constexpr auto find_or_enqueue(cpts::InvokableReturns<bool, const T&> auto&& predicate, Args&&... args) -> T& {
+		Node* old_head = head.load(std::memory_order_relaxed);
+
+		// First check if any current nodes have this value.
+		for (Node* node = old_head; node; node = node->next) {
+			if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
+				return node->value;
+			}
+		}
+
+		Node* new_head = new Node{
+			.value{std::forward<Args>(args)...},
+			.next = old_head,
+		};
+
+		const Node* previous_next_node = new_head->next;
+		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			for (Node* node = new_head->next; node && node != previous_next_node; node = node->next) {
+				if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
+					delete new_head;
+					return node->value;
+				}
+			}
+
+			previous_next_node = new_head->next;
+
+			std::this_thread::yield();
+		}
+
+		return new_head->value;
+	}
+
+	// NOT thread-safe.
+	[[nodiscard]] constexpr auto dequeue() -> Optional<T> {
+		if (Node* old_head = head.load(std::memory_order_relaxed)) {
+			head.store(old_head->next, std::memory_order_relaxed);
+			Optional<T> out{std::move(old_head->value)};
+
+			delete old_head;
+
+			return out;
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
+	Atomic<Node*> head = null;
+};
+
+// Atomic multiple producer single consumer queue with chunked contiguous allocation.
+template <typename T, usize N = 64>
+struct MpscQueue {
+	struct Node {
+		Atomic<u32> count = 0;
+		alignas(T) u8 data[N * sizeof(T)];
+		Node* next = null;// Only useful for consumer so doesn't need to be atomic.
+	};
+
+	// NOT thread-safe.
+	constexpr ~MpscQueue() {
+		Node* node = head.load(std::memory_order_relaxed);
+		do {
+			if constexpr (!std::is_trivially_destructible_v<T>) {
+				for (u32 i = 0; i < node->count.load(std::memory_order_relaxed); ++i) {
+					std::destroy_at(&reinterpret_cast<T*>(node->data)[i]);
+				}
+			}
+
+			Node* old_node = node;
+			node = node->next;
+
+			delete old_node;
+		} while (node);
+	}
+
+	// Thread-safe.
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr auto enqueue(Args&&... args) -> T& {
+		Node* current_head = head.load(std::memory_order_relaxed);
+
+		while (true) {
+			// Whether this node is full. Means we need to create a new node.
+			bool is_node_at_max_capacity = false;
+			u32 previous_count = current_head->count.load(std::memory_order_relaxed);
+			while (true) {
+				if (previous_count == N) {
+					is_node_at_max_capacity = true;
+					break;
+				}
+
+				if (current_head->count.compare_exchange_weak(previous_count, previous_count + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) [[likely]] {
+					break;
+				}
+
+				std::this_thread::yield();
+			}
+
+			// Construct a new node that will become the head. Then loop around again and try to enqueue.
+			if (is_node_at_max_capacity) {
+				Node* new_head = new Node{
+					.next = current_head,
+				};
+
+				// Attempt to change the head.
+				if (!head.compare_exchange_strong(current_head, new_head, std::memory_order_seq_cst, std::memory_order_seq_cst)) [[unlikely]] {
+					// Failed to change the head (another thread did it before us).
+					delete new_head;
+				}
+
+				continue;
+			}
+
+			T& data = reinterpret_cast<T*>(current_head->data)[previous_count];
+			std::construct_at(&data, std::forward<Args>(args)...);
+
+			return data;
+		}
+	}
+
+	// NOT thread-safe.
+	[[nodiscard]] constexpr auto dequeue() -> Optional<T> {
+		Node* node = head.load(std::memory_order_relaxed);
+
+		if (const u32 count = node->count.load(std::memory_order_relaxed)) {
+			const auto index = node->count.fetch_sub(1, std::memory_order_relaxed) - 1;
+			T& data = reinterpret_cast<T*>(node->data)[index];
+
+			Optional<T> out{std::move(data)};
+			std::destroy_at(&data);
+
+			if (count == 1 && node->next) {// Just dequeued the final element in this node.
+				head = node->next;
+				delete node;
+			}
+
+			return out;
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
+	Atomic<Node*> head = new Node{};
+};
+
+template <typename Key, typename T, usize N = 64, typename Hasher = std::hash<Key>, typename EqualOp = std::equal_to<Key>>
+struct MpscMap {
+	struct KeyValue {
+		constexpr KeyValue(Key key)
+			: key{std::move(key)}, value{} {}
+
+		Key key;
+		T value;
+	};
+
+	[[nodiscard]] constexpr auto find_or_add(Key key) -> T& {
+		const usize index = Hasher{}(key) % N;
+
+		return slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key)).value;
+	}
+
+	[[nodiscard]] constexpr auto find(const Key& key) -> T* {
+		const usize index = Hasher{}(key) % N;
+		KeyValue* found = slots[index].find([&](const KeyValue& other) { return EqualOp{}(key, other.key); });
+		return found ? &found->value : null;
+	}
+
+	MpscList<KeyValue> slots[N];
 };

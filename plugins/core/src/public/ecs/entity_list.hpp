@@ -96,7 +96,7 @@ struct EntityList {
 
 	[[nodiscard]] FORCEINLINE auto is_initialized(const std::integral auto index) const -> bool {
 		ASSERTF(is_valid_index(index), "Invalid index {} of size {}!", index, entries.size());
-		return initialized_mask[index / 64] & 1 << index % 64;
+		return initialized_mask[index / 64] & 1ull << index % 64;
 	}
 
 	[[nodiscard]] FORCEINLINE auto is_entity_valid(const Entity entity) const -> bool {

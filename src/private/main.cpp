@@ -141,8 +141,10 @@ struct System {
 
 		usize some_count = 0;
 		query.for_each(world, [&](const Entity& entity, const SomeComp& comp) {
-			fmt::println("{}: {}: {} {}", ++some_count, static_cast<const void*>(&comp), comp.name, entity);
+			++some_count;
+			//fmt::println("{}: {}: {} {}", ++some_count, static_cast<const void*>(&comp), comp.name, entity);
 		});
+		//fmt::println("Thing for {}", some_count);
 	}
 
 	u32 this_count = 0;
@@ -176,38 +178,76 @@ struct ConstructEntitiesSystem {
 
 		std::this_thread::sleep_for(std::chrono::seconds{2});
 
-#if 01
-		const auto a = world.spawn(SomeComp{}, Comp<0>{});
+#if 0
+		const auto a = world.spawn_entity(SomeComp{});
 
-		const auto b = world.spawn(SomeComp{});
+		const auto b = world.spawn_entity(SomeComp{});
+#else
+		//world.spawn_entities(2, SomeComp{.name = "Message of the day!"});
+#if 01
+
+		for (usize i = 0; i < 10000; ++i) {
+			world.spawn_entity(SomeComp{}, SomeStruct{}, Array<u32>{100, 200, 400, 600, 72389290, 29093});
+		}
+#else
+		ecs::Archetype& archetype = world.find_or_create_archetype(ecs::ArchetypeDesc{
+			.comps = ecs::CompMask::make<SomeComp>(),
+		}).first;
+
+		Array<Entity> entities;
+		for (usize i = 0; i < 100; ++i) {
+			entities.push_back(world.reserve_entity());
+		}
+
+		archetype.add_defaulted_entities(entities);
+#endif
 #endif
 	}
 };
 
 auto main() -> int {
-	#if 01
 	using namespace ecs;
 
-	App app;
-	#if 0
-	app.register_group<Group<1>>();
-	app.register_group<Group<2>>(Ordering{
-		.after = GroupMask::make<Group<1>>(),
-	});
-	app.register_group<Group<3>>(Ordering{
-		.after = GroupMask::make<Group<1>, Group<2>>(),
-	});
-	app.register_group<Group<4>>(Ordering{
-		.after = GroupMask::make<Group<2>>(),
-	});
-	app.register_group<Group<5>>(Ordering{
-		.before = GroupMask::make<Group<3>>(),
-	});
-	app.register_group<Group<6>>(Ordering{
-		.after = GroupMask::make<Group<1>, Group<2>, Group<3>, Group<4>, Group<5>>(),
-	});
-	#endif
+	MpscQueue<Fn<u64()>> queue;
 
+	const auto start = std::chrono::high_resolution_clock::now();
+
+	Array<std::thread> threads;
+	for (usize i = 0; i < 32; ++i) {
+		threads.push_back(std::thread{[&] {
+			for (u64 i = 0; i < 1000; ++i) {
+				queue.enqueue([i] { return i; });
+			}
+		}});
+	}
+
+	for (auto& thread : threads) {
+		thread.join();
+	}
+
+	const auto end = std::chrono::high_resolution_clock::now();
+
+	Optional<Fn<u64()>> value;
+	u64 aggregate_value = 0;
+	u64 count = 0;
+	u64 max = 0;
+	u64 min = std::numeric_limits<u64>::max();
+	while ((value = queue.dequeue())) {
+		const auto actual_value = (*value)();
+		aggregate_value += actual_value;
+		max = std::max(max, actual_value);
+		min = std::min(min, actual_value);
+		++count;
+	}
+	fmt::println("value == {}. count == {}, max == {}, min == {}", aggregate_value, count, max, min);
+
+	fmt::println("duration == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+
+	std::this_thread::sleep_for(std::chrono::seconds{2});
+
+#if 0
+
+	App app;
 	const auto register_group = [&]<usize I>() {
 		if constexpr (I != 0) {
 			app.register_group<Group<I>>(Ordering{
@@ -226,27 +266,6 @@ auto main() -> int {
 		});
 	};
 
-	{
-		//GroupMultiArray<PrintStruct, SomeStruct, PrintStruct, PrintStruct, SomeStruct, SomeStruct, u32> something;
-	}
-
-#if 0
-	register_group.operator()<1>();
-	register_group.operator()<2>();
-	register_group.operator()<3>();
-	register_group.operator()<4>();
-	register_group.operator()<5>();
-	register_group.operator()<6>();
-
-	register_system.operator()<1, Group<1>>();
-	register_system.operator()<2, Group<2>>();
-	register_system.operator()<3, Group<3>>();
-	register_system.operator()<4, Group<4>>();
-	register_system.operator()<5, Group<5>>();
-	register_system.operator()<6, Group<5>>();
-#endif
-
-#if 1
 	[&]<usize I>(this auto&& self) -> void {
 		static constexpr usize GROUP_INTERVAL = 100;
 		if constexpr (I % GROUP_INTERVAL == 0) {
@@ -257,9 +276,7 @@ auto main() -> int {
 			self.template operator()<I + 1>();
 		}
 	}.operator()<0>();
-#endif
 
-#if 1
 	app.register_group<Group<10>>(Ordering{
 		.before = GroupMask::make<Group<0>>(),
 	});
@@ -268,9 +285,6 @@ auto main() -> int {
 		.group = get_group_id<Group<10>>(),
 		.event = get_event_id<event::OnInit>(),
 	});
-#endif
-
-	const auto start = std::chrono::high_resolution_clock::now();
 
 	app.run();
 
@@ -285,88 +299,9 @@ auto main() -> int {
 
 	const auto end = std::chrono::high_resolution_clock::now();
 
-	fmt::println("FINISHED in {}", std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+	fmt::println("FINISHED");
 	std::this_thread::sleep_for(std::chrono::seconds{2});
 
-#elif 0
-
-	task::init();
-
-	volatile bool request_exit = false;
-
-	task::enqueue([&] {
-		fmt::println("Hello world!");
-		task::parallel_for(100, [&](const usize i) {
-			fmt::println("Executing {}", i);
-		});
-		request_exit = true;
-	});
-
-	task::do_work([&] { return request_exit; });
-
-	task::deinit();
-
-#else
-
-	ecs::World::do_something();
-
-#endif
-
-#if 0
-	usize num_entities_per_chunk;
-	{
-		Archetype archetype{ArchetypeDesc{.comps = CompMask::make<SomeStruct, SomeOtherStruct, u8, TestStruct, bool>()}};
-		//archetype.add_defaulted_entities(404 * 10);
-
-		Array<Entity> entities;
-		for (u32 i = 0; i < 1000; ++i) {
-			entities.push_back(Entity{i, 69});
-		}
-
-		archetype.add_defaulted_entities(entities);
-		//archetype.remove_at(0, 1);
-		num_entities_per_chunk = archetype.num_entities_per_chunk;
-
-		usize count = 0;
-		archetype.for_each<SomeStruct>([&](const Entity& entity, const SomeStruct& some_struct) {
-			std::ostringstream stream;
-			serialize_json(stream, some_struct);
-
-			fmt::println("[{}]: Entity {} {}\n{}", ++count, entity.get_index(), entity.get_version(), stream.str());
-		});
-
-		archetype.remove_at(100, 520);
-	}
-
-	fmt::println("Constructed == {}. Destructed == {}", TestStruct::constructed_counter, TestStruct::destructed_counter);
-
-	fmt::println("num per chunk == {}", num_entities_per_chunk);
-#endif
-
-#if 0
-
-	EntityList list;
-
-	Array<Entity> entities;
-
-	static constexpr auto COUNT = 5;
-
-	for (usize i = 0; i < COUNT; ++i) {
-		entities.push_back(list.reserve_entity());
-	}
-
-	for (usize i = 0; i < COUNT; ++i) {
-		list.remove_entity(entities[i]);
-	}
-
-	for (usize i = 0; i < COUNT; ++i) {
-		entities.push_back(list.reserve_entity());
-	}
-
-	for (const auto& entity : entities) {
-		fmt::println("{}", entity);
-	}
-#endif
-
 	return EXIT_SUCCESS;
+#endif
 }
