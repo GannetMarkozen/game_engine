@@ -559,3 +559,38 @@ struct TypeMultiArray {
 	void* data;
 };
 }
+
+template <cpts::IntAlias IdType> requires (utils::get_raw_type_name<IdType>().contains("ecs::"))
+struct fmt::formatter<IdType> {
+	constexpr auto parse(fmt::format_parse_context& context) {
+		return context.begin();
+	}
+
+	template <typename FmtContext>
+	auto format(const IdType& value, FmtContext& context) {
+		return fmt::format_to(context.out(), "{}", ecs::get_type_info(value).name);
+	}
+};
+
+template <usize N, cpts::IntAlias IdType>
+struct fmt::formatter<ecs::StaticTypeMask<IdType, N>> {
+	constexpr auto parse(fmt::format_parse_context& context) {
+		return context.begin();
+	}
+
+	template <typename FmtContext>
+	auto format(const ecs::StaticTypeMask<IdType, N>& value, FmtContext& context) {
+		String out;
+		bool is_first = true;
+		value.for_each([&](const IdType id) {
+			if (is_first) {
+				is_first = false;
+			} else {
+				out += ", ";
+			}
+
+			out += fmt::format("{}", id);
+		});
+		return fmt::format_to(context.out(), "{{ {} }}", out);
+	}
+};

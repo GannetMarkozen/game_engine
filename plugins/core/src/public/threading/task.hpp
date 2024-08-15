@@ -17,20 +17,28 @@ enum class Thread : u8 {
 	MAIN, ANY, COUNT
 };
 
-struct alignas(CACHE_LINE_SIZE) Task {
-	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, Array<SharedPtr<Task>> subsequents = {})
-		: fn{std::move(fn)}, subsequents{std::move(subsequents)}, priority{priority}, thread{thread} {}
+enum class TaskState : u8 {
+	STANDBY, COMPLETE
+};
 
-	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable<const SharedPtr<Task>&> auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY, Array<SharedPtr<Task>> subsequents = {}) -> SharedPtr<Task> {
+struct Task {
+	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, MpscQueue<SharedPtr<Task>>&& subsequents = {}, MpscQueue<WeakPtr<Task>>&& exclusives = {})
+		: fn{std::move(fn)}, priority{priority}, subsequents{std::move(subsequents)}, thread{thread} {}
+
+	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable<const SharedPtr<Task>&> auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
+		MpscQueue<SharedPtr<Task>> subsequents = {}, MpscQueue<WeakPtr<Task>>&& exclusives = {}) -> SharedPtr<Task>
+	{
 		return std::make_shared<Task>(FORWARD_AUTO(task), priority, thread, std::move(subsequents));
 	}
 
-	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY, Array<SharedPtr<Task>> subsequents = {}) -> SharedPtr<Task> {
+	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
+		MpscQueue<SharedPtr<Task>> subsequents = {}, MpscQueue<WeakPtr<Task>>&& exclusives = {}) -> SharedPtr<Task>
+	{
 		return make([task = std::move(task)](const SharedPtr<Task>&) { task(); }, priority, thread, std::move(subsequents));
 	}
 
 	[[nodiscard]] FORCEINLINE auto has_completed() const -> bool {
-		return completed;
+		return state == TaskState::COMPLETE;
 	}
 
 	[[nodiscard]] FORCEINLINE auto has_prerequisites() const -> bool {
@@ -44,23 +52,23 @@ struct alignas(CACHE_LINE_SIZE) Task {
 		ASSERTF(!other->enqueued || other->has_prerequisites(), "Can not add subsequent to a task that has the potential to be enqueued! other->enqueued == {}. other->has_prerequisites() == {}",
 			other->enqueued, other->has_prerequisites());
 
-		ScopeLock lock{subsequents_mutex};
+		ScopeSharedLock lock{execution_mutex};
 
 		if (has_completed()) {
 			return false;
 		}
 
 		++other->prerequisites_remaining;
-		subsequents.push_back(std::move(other));
+		subsequents.enqueue(std::move(other));
 
 		return true;
 	}
 
 	Fn<void(const SharedPtr<Task>&)> fn;
-	Array<SharedPtr<Task>> subsequents;
+	MpscQueue<SharedPtr<Task>> subsequents;
 	Atomic<u32> prerequisites_remaining = 0;
-	Mutex subsequents_mutex;
-	volatile bool completed = false;
+	mutable SharedMutex execution_mutex;
+	volatile TaskState state = TaskState::STANDBY;
 	Priority priority;
 	Thread thread;
 #if ASSERTIONS_ENABLED
@@ -173,6 +181,7 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 		SharedPtr<Task> task = null;
 
 		// Try dequeue an available task. Else sleep this thread.
+		// @TODO: Spin for a bit before sleeping.
 		while (!(task = try_dequeue_task<IS_IN_MAIN_THREAD>())) [[unlikely]] {
 			auto& thread_condition = impl::get_this_thread_condition();
 
@@ -204,10 +213,10 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 		}
 
 		// Take the subsequents.
-		const Array<SharedPtr<Task>> subsequents = [&] {
-			ScopeLock lock{task->subsequents_mutex};
+		MpscQueue<SharedPtr<Task>> subsequents = [&] {
+			ScopeLock lock{task->execution_mutex};
 
-			task->completed = true;
+			task->state = TaskState::COMPLETE;
 
 			return std::move(task->subsequents);
 		}();
@@ -216,7 +225,9 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 		[[maybe_unused]] bool any_subsequents_for_main_thread = false;
 
 		// Enqueue subsequent if there's no more remaining prerequisites.
-		for (auto& subsequent : subsequents) {
+		Optional<SharedPtr<Task>> result;
+		while ((result = subsequents.dequeue())) {
+			auto& subsequent = *result;
 			if (--subsequent->prerequisites_remaining == 0) {
 				const auto thread = subsequent->thread;
 				const auto priority = subsequent->priority;
@@ -248,6 +259,12 @@ inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -> void {
 	} else {
 		do_work<false>(FORWARD_AUTO(request_exit));
 	}
+}
+
+inline auto do_work_until_all_tasks_complete(cpts::InvokableReturns<bool> auto&& additional_condition = [] { return true; }) -> void {
+	do_work([&] {
+		return num_tasks_in_flight.load(std::memory_order_relaxed) == 0 && std::invoke(FORWARD_AUTO(additional_condition));
+	});
 }
 
 inline auto init(const usize num_workers = std::thread::hardware_concurrency() - 1) -> bool {
@@ -306,18 +323,18 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 
 	// Need to lock subsequents of prerequisites since we don't want them dispatching on another thread while we are modifying it.
 	for (const auto& prerequisite : prerequisites) {
-		prerequisite->subsequents_mutex.lock();
+		prerequisite->execution_mutex.lock_shared();
 
 		if (!prerequisite->has_completed()) {
 			++num_prerequisites;
-			prerequisite->subsequents.push_back(task);
+			prerequisite->subsequents.enqueue(task);
 		}
 	}
 
 	task->prerequisites_remaining = num_prerequisites;
 
 	for (const auto& prerequisite : prerequisites) {
-		prerequisite->subsequents_mutex.unlock();
+		prerequisite->execution_mutex.unlock_shared();
 	}
 
 	++num_tasks_in_flight;

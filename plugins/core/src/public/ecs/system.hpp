@@ -2,10 +2,10 @@
 
 namespace ecs {
 struct World;
+struct ExecContext;
 
 struct SystemBase {
 	virtual ~SystemBase() = default;
-	virtual auto execute(World& world) -> void = 0;
+	virtual auto execute(ExecContext& context) -> void = 0;
 };
-
 }

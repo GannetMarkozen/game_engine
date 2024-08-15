@@ -1,7 +1,7 @@
 #pragma once
 
 #include "ids.hpp"
-#include "system_base.hpp"
+#include "system.hpp"
 #include "world.hpp"
 #include "utils.hpp"
 #include "defaults.hpp"
@@ -110,8 +110,8 @@ struct App {
 			constexpr System(const Args&... args)
 				: system{args...} {}
 
-			virtual auto execute(World& world) -> void override {
-				system.execute(world);
+			virtual auto execute(ExecContext& context) -> void override {
+				system.execute(context);
 			}
 
 			T system;

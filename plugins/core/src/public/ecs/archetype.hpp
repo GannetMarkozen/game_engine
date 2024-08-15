@@ -127,6 +127,129 @@ struct EXPORT_API Archetype {
 
 	auto add_uninitialized_entities(const usize count = 1) -> usize;
 
+	template <typename... Comps>
+	auto add_entity(const Entity entity, Comps&&... comps) -> usize {
+		const usize index = add_uninitialized_entities(1);
+
+		Chunk& chunk = get_chunk(index / num_entities_per_chunk);
+		const usize index_within_chunk = index % num_entities_per_chunk;
+
+		std::construct_at(&reinterpret_cast<Entity*>(&chunk.data[entity_offset_within_chunk])[index_within_chunk], entity);
+
+		([&] {
+			using Comp = std::decay_t<Comps>;
+			if constexpr (!std::is_empty_v<Comp>) {
+				const auto it = std::ranges::find(this->comps, get_comp_id<Comp>(), &CompInfo::id);
+				ASSERTF(it != this->comps.end(), "Component {} does not exist on Archetype!", utils::get_type_name<Comp>());
+
+				const usize offset_within_chunk = it->offset_within_chunk;
+				std::construct_at(&reinterpret_cast<Comp*>(&chunk.data[offset_within_chunk])[index], std::forward<Comps>(comps));
+			}
+		}(), ...);
+
+		return index;
+	}
+
+	template <typename... Comps>
+	auto add_entities(const Span<const Entity> entities, const Comps&... comps) -> usize {
+		ASSERT(!entities.empty());
+
+		const usize start = add_uninitialized_entities(entities.size());
+
+		const usize offsets[] = {
+			[&] {
+				using Comp = std::decay_t<Comps>;
+				if constexpr (std::is_empty_v<Comp>) {
+					return std::numeric_limits<usize>::max();
+				} else {
+					const auto it = std::ranges::find(comps, &rtti::get_type_info<Comp>(), &CompInfo::id);
+					ASSERTF(it != comps.end(), "Component {} does not exist on archetype!", rtti::get_type_info<Comp>().name);
+					return it->offset_within_chunk;
+				}
+			}()...
+		};
+
+		usize num_constructed = 0;
+		for_each_chunk_from_start(start, [&](Chunk& chunk, const usize index, const usize count) {
+			Entity* dst = reinterpret_cast<Entity*>(&chunk.data[entity_offset_within_chunk + index * sizeof(Entity)]);
+			const Entity* src = &entities[num_constructed];
+
+			memcpy(dst, src, count * sizeof(Entity));
+
+			([&] {
+				using Comp = std::decay_t<Comps>;
+
+				Comp* dst = reinterpret_cast<Comp*>(&chunk.data[offsets[utils::index_of_type<Comps, Comps...>()] + index * sizeof(Comp)]);
+				auto* src = &comps[num_constructed];
+
+				for (usize i = 0; i < count; ++i) {
+					std::construct_at(&dst[i], src[i]);
+				}
+			}(), ...);
+
+			num_constructed += count;
+		});
+
+		return start;
+	}
+
+	template <bool MOVE_CONSTRUCT = false, typename... Comps>
+	auto add_entities(const usize count, const Entity* entities, Comps*... comps) -> usize {
+		ASSERT(entities);
+		ASSERT(comps && ...);
+
+		const usize start = add_uninitialized_entities(count);
+
+		const usize offsets[] = {
+			[&] {
+				using Comp = std::decay_t<Comps>;
+				if constexpr (std::is_empty_v<Comp>) {
+					return std::numeric_limits<usize>::max();
+				} else {
+					const auto it = std::ranges::find(comps, &rtti::get_type_info<Comp>(), &CompInfo::id);
+					ASSERTF(it != comps.end(), "Component {} does not exist on archetype!", rtti::get_type_info<Comp>().name);
+					return it->offset_within_chunk;
+				}
+			}()...
+		};
+
+		usize num_constructed = 0;
+		for_each_chunk_from_start(start, [&](Chunk& chunk, const usize index, const usize count) {
+			Entity* dst = reinterpret_cast<Entity*>(&chunk.data[entity_offset_within_chunk + index * sizeof(Entity)]);
+			const Entity* src = &entities[num_constructed];
+
+			memcpy(dst, src, count * sizeof(Entity));
+
+			([&] {
+				using Comp = std::decay_t<Comps>;
+				if constexpr (!std::is_empty_v<Comp>) {
+					static_assert(std::is_trivially_copy_constructible_v<Comp> == std::is_trivially_move_constructible_v<Comp>);
+
+					Comp* dst = reinterpret_cast<Comp*>(&chunk.data[offsets[utils::index_of_type<Comps, Comps...>()] + index * sizeof(Comp)]);
+					auto* src = &comps[num_constructed];
+
+					if constexpr (std::is_trivially_copy_constructible_v<Comp>) {
+						memcpy(dst, src, count * sizeof(Comp));
+					} else if constexpr (MOVE_CONSTRUCT && std::is_move_constructible_v<Comp>) {
+						static_assert(!std::is_const_v<std::remove_reference_t<Comps>>);
+
+						for (usize i = 0; i < count; ++i) {
+							std::construct_at(&dst[i], std::move(src[i]));
+						}
+					} else {
+						for (usize i = 0; i < count; ++i) {
+							std::construct_at(&dst[i], src[i]);
+						}
+					}
+				}
+			}(), ...);
+
+			num_constructed += count;
+		});
+
+		return start;
+	}
+
 	[[nodiscard]] auto get_chunk_index(const Chunk& chunk) const -> usize {
 		const Chunk* current_chunk = &head_chunk;
 		usize index = 0;

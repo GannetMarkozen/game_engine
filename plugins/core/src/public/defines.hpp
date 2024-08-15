@@ -1,5 +1,6 @@
 #pragma once
 
+#include <new>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -71,6 +72,18 @@ static_assert(false, "Unknown compiler");
 #define RESTRICT
 #endif
 
+#ifndef __has_attribute
+static_assert(false, "No C++ attributes!");
+#endif
+
+#if __has_cpp_attribute(no_unique_address)
+#define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#elif __has_cpp_attribute(msvc::no_unique_address)
+#define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#define NO_UNIQUE_ADDRESS
+#endif
+
 #define DECLARE_ENUM_CLASS_FLAGS(Enum) \
 	FORCEINLINE constexpr Enum& operator|=(Enum& Lhs, const Enum Rhs) 			{ return Lhs = (Enum)((__underlying_type(Enum))Lhs | (__underlying_type(Enum))Rhs); } \
 	FORCEINLINE constexpr Enum& operator&=(Enum& Lhs, const Enum Rhs) 			{ return Lhs = (Enum)((__underlying_type(Enum))Lhs & (__underlying_type(Enum))Rhs); } \
@@ -85,12 +98,11 @@ static_assert(false, "Unknown compiler");
 	Type(Type&&) = delete; \
 	Type(const Type&) = delete; \
 	Type& operator=(const Type&) = delete; \
-	Type& operator=(Type&&) = delete;
+	Type& operator=(Type&&) noexcept = delete;
 
 // Helper macro to perfectly forward an auto&& type (annoying it has to be a macro).
 #define FORWARD_AUTO(value) std::forward<decltype(value)>(value)
 
-// Yeah. I'm doing that.
 #define null nullptr
 
 using i8 = int8_t;
@@ -111,8 +123,9 @@ using f64 = double;
 static_assert(sizeof(f32) == 4);
 static_assert(sizeof(f64) == 8);
 
-// @NOTE: Requires ifdefs per-platform. This should be correct for all our use-cases though.
-constexpr usize CACHE_LINE_SIZE = 64;
+static_assert(std::hardware_constructive_interference_size == std::hardware_constructive_interference_size);
+
+constexpr usize CACHE_LINE_SIZE = std::hardware_destructive_interference_size;
 
 enum NoInit { NO_INIT };
 

@@ -4,9 +4,67 @@
 #include "static_reflection.hpp"
 #include "types.hpp"
 #include "utils.hpp"
+#include "threading/thread_safe_types.hpp"
+#include "ecs/world.hpp"
+#include "ecs/app.hpp"
+#include <vector>
+
+template <usize I>
+struct SomeGroup {};
+
+template <typename T>
+struct SomeStruct {
+	T value;
+};
+
+template <usize I = 0>
+struct SomeSystem {
+	[[nodiscard]] FORCEINLINE static auto get_access_requirements() -> ecs::AccessRequirements {
+		return {
+			.modifies = ecs::CompMask::make<SomeStruct<i32>, SomeStruct<f32>>(),
+		};
+	};
+
+	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
+		fmt::println("Executing {}", I);
+
+		context.spawn_entity(
+			SomeStruct<i32>{
+				.value = 10,
+			},
+			SomeStruct<f32>{
+				.value = 32.f
+			}
+		);
+
+		context.world.is_pending_destruction = true;
+	}
+};
+
+auto main() -> int {
+	using namespace ecs;
+
+	const AccessRequirements a{
+		.modifies = CompMask::make<SomeStruct<f32>, SomeStruct<u32>>(),
+	};
+
+	const AccessRequirements b{
+		.modifies = CompMask::make<SomeStruct<i32>>(),
+	};
+
+	const bool can_execute_concurrently = a.can_execute_concurrently_with(b);
+
+	fmt::println("can_execute_concurrently == {}", can_execute_concurrently);
+
+	App::build()
+		.register_system<SomeSystem<0>>(SystemDesc{
+			.event = get_event_id<event::OnInit>(),
+		})
+		.run();
+}
 
 
-
+#if 0
 struct SomeOtherStruct {
 	f64 double_value = 20.0;
 };
@@ -305,3 +363,4 @@ auto main() -> int {
 	return EXIT_SUCCESS;
 #endif
 }
+#endif

@@ -1,10 +1,12 @@
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <shared_mutex>
 #include <concurrentqueue.h>
 #include "defines.hpp"
 #include "types.hpp"
+#include "assert.hpp"
 
 DECLARE_INT_ALIAS(ThreadId, u16);
 
@@ -372,11 +374,11 @@ private:
 
 // Stores T and Mutex. Enforces that you lock the mutex before accessing the object to prevent screw-ups.
 template <typename T, cpts::Mutex MutexType = Mutex>
-struct Locked {
-	NON_COPYABLE(Locked);
+struct Lock {
+	NON_COPYABLE(Lock);
 
 	template<typename... Args> requires std::constructible_from<T, Args&&...>
-	FORCEINLINE constexpr explicit Locked(Args&&... args)
+	FORCEINLINE constexpr explicit Lock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	template<typename... Args>
@@ -401,13 +403,13 @@ private:
 
 // Stores T and Mutex. Enforces that you lock the mutex before accessing the object to prevent screw-ups.
 template<typename T, cpts::SharedMutex SharedMutexType = SharedMutex>
-struct RWLocked {
-	NON_COPYABLE(RWLocked);
+struct RwLock {
+	NON_COPYABLE(RwLock);
 
-	FORCEINLINE constexpr RWLocked() = default;
+	FORCEINLINE constexpr RwLock() = default;
 
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	FORCEINLINE constexpr explicit RWLocked(Args&&... args)
+	FORCEINLINE constexpr explicit RwLock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	template <typename... Args>
@@ -425,7 +427,7 @@ struct RWLocked {
 	struct ScopedReadAccess {
 		NON_COPYABLE(ScopedReadAccess);
 
-		explicit ScopedReadAccess(const RWLocked& owner [[clang::lifetimebound]])
+		explicit ScopedReadAccess(const RwLock& owner [[clang::lifetimebound]])
 			: owner{owner} {
 			owner.mutex.lock_shared();
 		}
@@ -447,13 +449,13 @@ struct RWLocked {
 		}
 
 	private:
-		const RWLocked& owner;
+		const RwLock& [[clang::lifetimebound]] owner;
 	};
 
 	struct ScopedWriteAccess {
 		NON_COPYABLE(ScopedWriteAccess);
 
-		explicit ScopedWriteAccess(RWLocked& owner [[clang::lifetimebound]])
+		explicit ScopedWriteAccess(RwLock& owner [[clang::lifetimebound]])
 			: owner{owner} {
 			owner.mutex.lock();
 		}
@@ -475,14 +477,14 @@ struct RWLocked {
 		}
 
 	private:
-		RWLocked& owner;
+		RwLock& [[clang::lifetimebound]] owner;
 	};
 
-	[[nodiscard]] FORCEINLINE auto get_scoped_read_access() const {
+	[[nodiscard]] FORCEINLINE auto read() const {
 		return ScopedReadAccess{*this};
 	}
 
-	[[nodiscard]] FORCEINLINE auto get_scoped_write_access() {
+	[[nodiscard]] FORCEINLINE auto write() {
 		return ScopedWriteAccess{*this};
 	}
 
@@ -629,13 +631,26 @@ struct MpscList {
 };
 
 // Atomic multiple producer single consumer queue with chunked contiguous allocation.
-template <typename T, usize N = 64>
+template <typename T, usize N = 32>
 struct MpscQueue {
 	struct Node {
 		Atomic<u32> count = 0;
 		alignas(T) u8 data[N * sizeof(T)];
 		Node* next = null;// Only useful for consumer so doesn't need to be atomic.
 	};
+
+	constexpr MpscQueue()
+		: head{new Node{}} {}
+
+	// Thread-safe move construct. (Thread-safe for other). Keeps the queue valid for more enqueues.
+	constexpr MpscQueue(MpscQueue&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+
+		Node* previous_head = other.head.exchange(new Node{}, std::memory_order_seq_cst);
+		head.store(previous_head, std::memory_order_relaxed);
+	}
 
 	// NOT thread-safe.
 	constexpr ~MpscQueue() {
@@ -669,7 +684,7 @@ struct MpscQueue {
 					break;
 				}
 
-				if (current_head->count.compare_exchange_weak(previous_count, previous_count + 1, std::memory_order_seq_cst, std::memory_order_seq_cst)) [[likely]] {
+				if (current_head->count.compare_exchange_weak(previous_count, previous_count + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) [[likely]] {
 					break;
 				}
 
@@ -683,7 +698,7 @@ struct MpscQueue {
 				};
 
 				// Attempt to change the head.
-				if (!head.compare_exchange_strong(current_head, new_head, std::memory_order_seq_cst, std::memory_order_seq_cst)) [[unlikely]] {
+				if (!head.compare_exchange_strong(current_head, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) [[unlikely]] {
 					// Failed to change the head (another thread did it before us).
 					delete new_head;
 				}
@@ -696,6 +711,8 @@ struct MpscQueue {
 
 			return data;
 		}
+
+		UNREACHABLE;
 	}
 
 	// NOT thread-safe.
@@ -720,10 +737,10 @@ struct MpscQueue {
 		}
 	}
 
-	Atomic<Node*> head = new Node{};
+	Atomic<Node*> head;
 };
 
-template <typename Key, typename T, usize N = 64, typename Hasher = std::hash<Key>, typename EqualOp = std::equal_to<Key>>
+template <typename Key, typename T, usize N = 32, typename Hasher = std::hash<Key>, typename EqualOp = std::equal_to<Key>>
 struct MpscMap {
 	struct KeyValue {
 		constexpr KeyValue(Key key)
@@ -745,5 +762,142 @@ struct MpscMap {
 		return found ? &found->value : null;
 	}
 
+	[[nodiscard]] constexpr auto find_and_dequeue(const Key& key) -> Optional<T> {
+		const usize index = Hasher{}(key) % N;
+		if (auto found = slots[index].find_and_dequeue([&](const KeyValue& other) { return EqualOp{}(key, other.key); })) {
+			return {std::move(found->value)};
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
 	MpscList<KeyValue> slots[N];
+};
+
+#if 0
+// Multiple producer / consumer linked-list with atomic searches. Only works on 64 bit architecture.
+template <typename T>
+struct AtomicList {
+	static_assert(sizeof(T*) == sizeof(u64), "AtomicList only works on 64-bit architecture!");
+	static_assert(alignof(T*) == alignof(u64));
+
+	static constexpr usize REFCOUNT_BITS = 16;
+	static constexpr usize REFCOUNT_OFFSET = 64 - REFCOUNT_BITS;
+	static constexpr u64 REFCOUNT_MASK = UINT64_MAX >> REFCOUNT_BITS;
+	static constexpr u64 ADDRESS_MASK = UINT64_MAX & ~REFCOUNT_MASK;
+
+	struct Node {
+		T value;
+		Node* next = null;
+		Node* previous = null;
+	};
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	auto enqueue(this AtomicList& self, Args&&... args) -> void {
+		Node* new_head = new Node{
+			.value{std::forward<Args>(args)...},
+			.next = self.head.load(std::memory_order_relaxed),
+			.previous = null,
+		};
+
+		while (!self.head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+
+		Node* expected = null;
+		self.tail.compare_exchange_strong(expected, new_head->next);
+	}
+
+	auto dequeue(this AtomicList& self) -> Optional<T> {
+
+	}
+
+	Atomic<Node*> head = null;
+	Atomic<Node*> tail = null;
+};
+#endif
+
+template <typename T>
+struct AtomicSharedPtr {
+	
+};
+
+template <typename T>
+struct AtomicListNode {
+	T value;
+	u64 next = NULL;
+};
+
+template <typename T, typename Allocator = std::allocator<AtomicListNode<T>>>
+struct AtomicList {
+	static_assert(sizeof(T*) == sizeof(u64));
+	static_assert(alignof(T*) == alignof(u64));
+
+	// Avoids the ABA problem by using the unused 16 bits on the pointer as a tag.
+	static constexpr usize COUNT_OFFSET = 48;
+	static constexpr u64 ADDRESS_MASK = UINT64_MAX >> 16;
+	static constexpr u64 COUNT_MASK = UINT64_MAX & ~ADDRESS_MASK;
+
+	using Node = AtomicListNode<T>;
+
+	// NOT thread-safe.
+	~AtomicList() {
+		constexpr auto to_node = [](const u64 value) { return reinterpret_cast<Node*>(value & ADDRESS_MASK); };
+
+		Node* node = to_node(head.load(std::memory_order_relaxed));
+		while (node) {
+			if constexpr (!std::is_trivially_destructible_v<Node>) {
+				std::destroy_at(node);
+			}
+
+			allocator.deallocate(node, 1);
+
+			node = to_node(node->next);
+		}
+	}
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	auto enqueue(this AtomicList& self, Args&&... args) -> void {
+		auto* new_head = new(self.allocator.allocate(1)) Node{
+			.value{std::forward<Args>(args)...},
+			.next = self.head.load(std::memory_order_relaxed),
+		};
+
+		const u64 new_head_value = (reinterpret_cast<u64>(new_head) & ADDRESS_MASK) | static_cast<u64>(self.dequeue_counter.load(std::memory_order_acquire)) << COUNT_OFFSET;
+		while (!self.head.compare_exchange_weak(new_head->next, new_head_value, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+	}
+
+	[[nodiscard]] auto dequeue(this AtomicList& self) -> Optional<T> {
+		u64 head = self.head.load(std::memory_order_relaxed);
+
+		while (true) {
+			if (head == NULL) {
+				return NULL_OPTIONAL;
+			}
+
+			Node* node = reinterpret_cast<Node*>(head & ADDRESS_MASK);
+			if (self.head.compare_exchange_weak(head, node->next, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+				Optional<T> out{std::move(node->value)};
+				self.dequeue_counter.fetch_add(1, std::memory_order_consume);
+
+				if constexpr (!std::is_trivially_destructible_v<Node>) {
+					std::destroy_at(node);
+				}
+
+				self.allocator.deallocate(node, 1);
+
+				return out;
+			}
+
+			std::this_thread::yield();
+		}
+
+		UNREACHABLE;
+	}
+
+	Atomic<u64> head = NULL;
+	Atomic<u16> dequeue_counter = 0;
+	NO_UNIQUE_ADDRESS Allocator allocator;
 };

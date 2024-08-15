@@ -10,6 +10,7 @@ DECLARE_NAMESPACED_INT_ALIAS(ecs, EventId, u8);
 
 namespace ecs {
 struct World;
+struct ExecContext;
 
 using CompMask = StaticTypeMask<CompId, 512>;
 using ArchetypeMask = TypeMask<ArchetypeId>;// Dynamic mask because the number of archetypes is unpredictable at runtime.
@@ -29,8 +30,8 @@ template <typename... Ts> using EventMultiArray = TypeMultiArray<EventId, Ts...>
 
 struct AccessRequirements {
 	[[nodiscard]] FORCEINLINE constexpr auto can_execute_concurrently_with(const AccessRequirements& other) const -> bool {
-		return !(writes & (other.reads | other.writes)) && !(other.writes & (reads | writes)) &&// Check exclusive write access violations.
-			!((reads | writes) & other.modifies) && !((other.reads | other.writes) & modifies);// Check structural modifications access violations.
+		return !((writes | modifies) & (other.reads | other.writes | other.modifies)) &&
+			!((other.writes | other.modifies) & (reads | writes | modifies));
 	}
 
 	FORCEINLINE constexpr auto operator|=(const AccessRequirements& other) -> AccessRequirements& {
@@ -84,8 +85,8 @@ struct AccessRequirements {
 
 namespace cpts {
 template <typename T>
-concept System = requires (T t, World& world) {
-	t.execute(world);
+concept System = requires (T t, ExecContext& context) {
+	t.execute(context);
 	{ T::get_access_requirements() } -> std::same_as<AccessRequirements>;
 };
 }

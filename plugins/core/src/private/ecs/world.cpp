@@ -21,18 +21,18 @@ auto World::run() -> void {
 
 	dispatch_event<event::OnInit>();
 
-	task::do_work([&] { return is_pending_destruction; });
+	task::do_work_until_all_tasks_complete([&] { return is_pending_destruction; });
 }
 
 auto World::dispatch_event(const EventId event) -> void {
 	const auto& event_systems = app.event_systems[event];
 
-	Array<SharedPtr<task::Task>> tmp_tasks;// Temporary allocation to keep task references alive.
+	Array<SharedPtr<Task>> tmp_tasks;// Temporary allocation to keep task references alive.
 	tmp_tasks.reserve(event_systems.mask.count_set_bits());
 
-	Array<SharedPtr<task::Task>> event_prerequisites;
+	Array<SharedPtr<Task>> event_prerequisites;
 
-	Array<Array<SharedPtr<task::Task>>> system_prerequisites;
+	Array<Array<SharedPtr<Task>>> system_prerequisites;
 	system_prerequisites.reserve(event_systems.mask.count_set_bits());
 
 	ScopeLock lock{system_tasks_mutex};
@@ -50,12 +50,12 @@ auto World::dispatch_event(const EventId event) -> void {
 
 		// @NOTE: Conflicting tasks logic is potentially too much. Stalling from this should be extremely rare though. Could
 		// make a different variant of this lambda for non-conflicting
-		SharedPtr<task::Task> task = task::Task::make([this, id](const SharedPtr<task::Task>& this_task) -> void {
+		SharedPtr<Task> task = Task::make([this, id](const SharedPtr<Task>& this_task) -> void {
 			const SystemMask& conflicting_systems = app.concurrent_conflicting_systems[id];
 			const bool has_conflicting_systems = !!conflicting_systems;
 			if (has_conflicting_systems) {
 				while (true) {
-					Array<SharedPtr<task::Task>> executing_conflicting_tasks;
+					Array<SharedPtr<Task>> executing_conflicting_tasks;
 					{
 						ScopeSharedLock lock{conflicting_executing_systems_mutex};
 
@@ -83,13 +83,13 @@ auto World::dispatch_event(const EventId event) -> void {
 #if 0
 						task::busy_wait_for_tasks_to_complete(executing_conflicting_tasks);
 #else
-						Array<SharedPtr<task::Task>> subsequents = [&] {
-							ScopeLock lock{this_task->subsequents_mutex};
+						MpscQueue<SharedPtr<Task>> subsequents = [&] {
+							ScopeLock lock{this_task->execution_mutex};
 							return std::move(this_task->subsequents);
 						}();
 
 						// Re-enqueue self.
-						SharedPtr<task::Task> new_task = task::Task::make(std::move(this_task->fn), this_task->priority, this_task->thread, std::move(subsequents));
+						SharedPtr<Task> new_task = Task::make(std::move(this_task->fn), this_task->priority, this_task->thread, std::move(subsequents));
 
 						{
 							ScopeLock lock{system_tasks_mutex};
@@ -115,7 +115,20 @@ auto World::dispatch_event(const EventId event) -> void {
 				executing_systems.mask[id.get_value()].atomic_set(true);
 			}
 
-			systems[id]->execute(*this);
+			ExecContext context{
+				.world = *this,
+				.delta_time = 0.f,// @TODO: Do something with this.
+				.currently_executing_system = id,
+				.currently_executing_system_thread = std::this_thread::get_id(),
+			};
+
+			systems[id]->execute(context);
+
+			// Execute deferred actions.
+			Optional<ExecContext::DeferredFn> deferred;
+			while ((deferred = context.deferred_actions.dequeue())) {
+				(*deferred)(context);
+			}
 
 			// No need for a lock here. Clearing a system can't cause race-conditions.
 			executing_systems.mask[id.get_value()].atomic_set(false);
@@ -127,7 +140,7 @@ auto World::dispatch_event(const EventId event) -> void {
 
 	// Assign prerequisites / subsequents.
 	event_systems.for_each([&](const SystemId id) {
-		Array<SharedPtr<task::Task>> prerequisites;
+		Array<SharedPtr<Task>> prerequisites;
 
 		const GroupId group = app.system_create_infos[id].desc.group;
 		app.group_prerequisites[group].for_each([&](const GroupId prerequisite_group) {
@@ -249,8 +262,6 @@ auto World::find_or_create_archetype(const ArchetypeDesc& desc) -> Pair<Archetyp
 
 	archetype_desc_to_id[desc] = id;
 
-	archetype_entity_ctors.emplace_back();
-
 	desc.comps.for_each([&](const CompId comp_id) {
 		comp_archetypes_mask[comp_id].add(id);
 	});
@@ -264,5 +275,9 @@ auto World::get_accessing_systems(const ArchetypeDesc& desc) const -> SystemMask
 		out |= app.comp_accessing_systems[id];
 	});
 	return out;
+}
+
+auto World::get_system_access_requirements(const SystemId id) const -> const AccessRequirements& {
+	return app.system_create_infos[id].desc.access_requirements;
 }
 }

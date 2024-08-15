@@ -10,6 +10,7 @@ struct EntityDesc {
 	usize index_within_archetype;
 };
 
+// @TODO: Potentially make this atomic. Main blocker when spawning.
 struct EntityList {
 	struct EntityDescOrNext {
 		constexpr EntityDescOrNext()

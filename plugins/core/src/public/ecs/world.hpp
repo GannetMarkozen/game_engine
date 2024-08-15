@@ -1,6 +1,6 @@
 #pragma once
 
-#include "system_base.hpp"
+#include "system.hpp"
 #include "archetype.hpp"
 #include "entity_list.hpp"
 #include "threading/thread_safe_types.hpp"
@@ -11,33 +11,25 @@ namespace task { struct Task; }
 namespace ecs {
 struct App;
 struct World;
+}
+
+namespace ecs {
+struct ExecContext {
+	using DeferredFn = Fn<void(const ExecContext&)>;
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entity(Comps&&... comps) -> Entity;
+
+	World& [[clang::lifetimebound]] world;
+	const f32 delta_time;
+	const SystemId currently_executing_system;
+	const std::thread::id currently_executing_system_thread;
+	MpscQueue<DeferredFn> deferred_actions;
+};
 
 // @TODO: Archetype construction, deferred entity initialization, observers, resources, system "activation".
 struct World {
-	struct EntityCtorNode {
-		Fn<void()> ctor;
-		Atomic<EntityCtorNode*> next = null;
-	};
-
-	struct EntityCtorHead {
-		constexpr EntityCtorHead() = default;
-
-		// @NOTE: Must be copy constructible / assignable to be within an Array.
-		// This doesn't need to be atomic though as the elements will be locked.
-		EntityCtorHead(const EntityCtorHead& other)
-			: head{other.head.load(std::memory_order_relaxed)}
-#if ASSERTIONS_ENABLED
-				, is_dequeueing{other.is_dequeueing.load(std::memory_order_relaxed)}
-#endif
-			 {}
-
-		auto operator=(const EntityCtorHead& other) -> EntityCtorHead& { std::construct_at(this, other); return *this; }
-
-		Atomic<EntityCtorNode*> head = null;
-#if ASSERTIONS_ENABLED
-		Atomic<bool> is_dequeueing = false;
-#endif
-	};
+	using Task = task::Task;
 
 	NON_COPYABLE(World);
 
@@ -63,43 +55,7 @@ struct World {
 	[[nodiscard]] auto find_or_create_archetype(const ArchetypeDesc& desc) -> Pair<Archetype&, ArchetypeId>;
 
 #if 0
-	// Thread-safe. Spawning will be deferred and ran before any other systems that could access this entity.
-	template <typename... Comps>
-	auto spawn(Comps&&... comps) -> Entity {
-		static const ArchetypeDesc DESC{
-			.comps = CompMask::make<std::decay_t<Comps>...>(),
-		};
-
-		const SystemMask accessing_systems = get_accessing_systems(DESC);
-
-		Entity entity = reserve_entity();
-
-		// @TODO: Handle adding / removing components before entity construction && batch operations within a single-task.
-		SharedPtr<task::Task> construct_entity_task = task::Task::make(std::bind([this, entity](const SharedPtr<task::Task>& this_task, Comps&&... comps) {
-			Archetype& archetype = find_or_create_archetype(DESC);
-			const usize index = archetype.add_uninitialized_entities();
-
-			// Construct each element.
-			(std::construct_at(&archetype.get<std::decay_t<Comps>>(index), std::forward<Comps>(comps)), ...);
-		}, std::forward<Comps>(comps)...), task::Priority::HIGH);
-
-		{
-			ScopeSharedLock lock{system_tasks_mutex};
-
-			accessing_systems.for_each([&](const SystemId id) {
-				if (auto subsequent = system_tasks[id].lock()) {
-					construct_entity_task->add_subsequent(std::move(subsequent));
-				}
-			});
-		}
-
-		task::enqueue(std::move(construct_entity_task), task::Priority::HIGH);
-
-		return entity;
-	}
-#endif
-
-	NOINLINE auto internal_spawn_entities(const ArchetypeDesc& desc, const usize count, ::cpts::Invokable<const Array<Entity>&, Archetype&, usize> auto&& on_construction_fn, Array<Entity>* optional_out_entities = null,
+	auto internal_spawn_entities(const ArchetypeDesc& desc, const usize count, ::cpts::Invokable<const Array<Entity>&, Archetype&, usize> auto&& on_construction_fn, Array<Entity>* optional_out_entities = null,
 		const task::Priority construction_task_priority = task::Priority::HIGH, const task::Thread construction_task_thread = task::Thread::ANY) -> void {
 		ASSERT(count > 0);
 
@@ -296,15 +252,78 @@ struct World {
 
 		return out_entities;
 	}
+#endif
+
+	// NOT thread-safe. Systems with proper access requirements should be the only modifiers. Just don't parallel_for this.
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entity(ExecContext& context, Comps&&... comps) -> Entity {
+		const ArchetypeDesc archetype_desc{
+			.comps = CompMask::make<std::decay_t<Comps>...>(),
+		};
+
+		ASSERTF((archetype_desc.comps & get_system_access_requirements(context.currently_executing_system).modifies) == archetype_desc.comps,
+			"Currently executing system {} does not have the proper access requirements to spawn entity! Missing modification access for components: {}",
+			context.currently_executing_system, archetype_desc.comps & ~get_system_access_requirements(context.currently_executing_system).modifies);
+
+		const auto [archetype, archetype_id] = find_or_create_archetype(archetype_desc);
+
+		Entity entity{NO_INIT};
+		{
+			auto entities_access = entities.write();
+
+			entity = entities_access->reserve_entity();
+
+			// Whether or not we can immediately construct the entity (meaning this system during execution isn't capable of accessing the target archetype). Else enqueue for after execution.
+			const AccessRequirements& access_requirements = get_system_access_requirements(context.currently_executing_system);
+			const bool can_construct_entity_immediately = !(archetype_desc.comps & (access_requirements.reads | access_requirements.writes)) || context.currently_executing_system_thread != std::this_thread::get_id();
+
+			if (can_construct_entity_immediately) {
+				//const usize index_within_archetype = archetype.add_entities(Span<const Entity>{{entity}}, std::forward<Comps>(comps)...);
+				const usize index_within_archetype = archetype.add_entity(entity, std::forward<Comps>(comps)...);
+				entities_access->initialize_entity(entity, EntityDesc{
+					.archetype_id = archetype_id,
+					.index_within_archetype = index_within_archetype,
+				});
+			} else {
+				context.deferred_actions.enqueue([this, entity, archetype_id, &archetype, comps = utils::make_tuple(std::forward<Comps>(comps)...)](const ExecContext& context) mutable {
+					const usize index_within_archetype = utils::make_index_sequence_param_pack<sizeof...(Comps)>([&]<usize... Is>() {
+						return archetype.add_entity(entity, std::forward<utils::TypeAtIndex<Is, Comps...>>(std::get<Is>(comps))...);
+					});
+
+					entities.write()->initialize_entity(entity, EntityDesc{
+						.archetype_id = archetype_id,
+						.index_within_archetype = index_within_archetype,
+					});
+				});
+			}
+		}
+
+		return entity;
+	}
+
+#if 0
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto construct_entity_immediate(const Entity uninitialized_entity, Archetype& archetype, const ArchetypeId archetype_id, Comps&&... comps) -> void {
+		ASSERTF([&] {
+			ScopeSharedLock lock{archetypes_mutex};
+			return !(archetype_accessing_systems[archetype_id].mask & executing_systems.mask.atomic_clone());
+		}(), "Can not execute {} while systems that access this archetype are currently executing!", __PRETTY_FUNCTION__);
+
+		const usize index_within_archetype = archetype.add_entities({uninitialized_entity}, std::forward<Comps>(comps)...);
+
+		entities.write()->initialize_entity(uninitialized_entity, EntityDesc{
+			.archetype_id = archetype_id,
+			.index_within_archetype = index_within_archetype,
+		});
+	}
+#endif
 
 	[[nodiscard]] FORCEINLINE auto reserve_entity() -> Entity {
-		ScopeLock lock{entities_mutex};
-		return entities.reserve_entity();
+		return entities.write()->reserve_entity();
 	}
 
 	[[nodiscard]] FORCEINLINE auto is_entity_valid(const Entity entity) const -> bool {
-		ScopeSharedLock lock{entities_mutex};
-		return entities.is_entity_valid(entity);
+		return entities.read()->is_entity_valid(entity);
 	}
 
 	const App& app;
@@ -312,25 +331,29 @@ struct World {
 	Array<UniquePtr<SystemBase>> systems;// Indexed via SystemId.
 
 	mutable SharedMutex system_tasks_mutex;
-	Array<WeakPtr<task::Task>> system_tasks;// Indexed via SystemId. May be NULL or completed.
+	Array<WeakPtr<Task>> system_tasks;// Indexed via SystemId. May be NULL or completed.
 
 	mutable SharedMutex conflicting_executing_systems_mutex;
 	SystemMask executing_systems;// Mask of systems currently running. Only potentially set for systems with other conflicting systems.
 
-	mutable SharedMutex archetypes_mutex;
+	mutable SharedMutex archetypes_mutex;// @TODO: Should be moved into it's own struct.
 	Array<UniquePtr<Archetype>> archetypes;// Indexed via ArchetypeId.
 	Map<ArchetypeDesc, ArchetypeId> archetype_desc_to_id;// Lookup for ArchetypeDesc for ArchetypeId.
 	Array<ArchetypeMask> comp_archetypes_mask;// Indexed via CompId. A mask of all archetypes that contain this component.
 	Array<SystemMask> archetype_accessing_systems;// Indexed via ArchetypeId. All the systems that require access to this archetype.
-	Array<EntityCtorHead> archetype_entity_ctors;// Indexed via ArchetypeId. Pending entity constructors. @NOTE: Needs to be freed upon destruction.
 
-	mutable SharedMutex entities_mutex;
-	EntityList entities;
+	RwLock<EntityList> entities;
 
 	volatile bool is_pending_destruction = false;
 
 private:
 	// Sigh. Just to break circular-dependencies. Modules would be nice.
 	[[nodiscard]] auto get_accessing_systems(const ArchetypeDesc& desc) const -> SystemMask;
+	[[nodiscard]] auto get_system_access_requirements(const SystemId id) const -> const AccessRequirements&;
 };
+
+template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+FORCEINLINE auto ExecContext::spawn_entity(Comps&&... comps) -> Entity {
+	return world.spawn_entity(*this, std::forward<Comps>(comps)...);
+}
 }
