@@ -84,7 +84,7 @@ auto World::dispatch_event(const EventId event) -> void {
 						task::busy_wait_for_tasks_to_complete(executing_conflicting_tasks);
 #else
 						MpscQueue<SharedPtr<Task>> subsequents = [&] {
-							ScopeLock lock{this_task->execution_mutex};
+							ScopeExclusiveLock lock{this_task->subsequents_mutex};
 							return std::move(this_task->subsequents);
 						}();
 
@@ -92,7 +92,7 @@ auto World::dispatch_event(const EventId event) -> void {
 						SharedPtr<Task> new_task = Task::make(std::move(this_task->fn), this_task->priority, this_task->thread, std::move(subsequents));
 
 						{
-							ScopeLock lock{system_tasks_mutex};
+							ScopeExclusiveLock lock{system_tasks_mutex};
 							system_tasks[id] = new_task;
 						}
 

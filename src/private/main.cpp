@@ -1,366 +1,101 @@
-#include "core_include.hpp"
-#include "defines.hpp"
-#include "fmt/core.h"
-#include "static_reflection.hpp"
-#include "types.hpp"
-#include "utils.hpp"
+#include "threading/task.hpp"
 #include "threading/thread_safe_types.hpp"
-#include "ecs/world.hpp"
-#include "ecs/app.hpp"
-#include <vector>
-
-template <usize I>
-struct SomeGroup {};
-
-template <typename T>
-struct SomeStruct {
-	T value;
-};
-
-template <usize I = 0>
-struct SomeSystem {
-	[[nodiscard]] FORCEINLINE static auto get_access_requirements() -> ecs::AccessRequirements {
-		return {
-			.modifies = ecs::CompMask::make<SomeStruct<i32>, SomeStruct<f32>>(),
-		};
-	};
-
-	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
-		fmt::println("Executing {}", I);
-
-		context.spawn_entity(
-			SomeStruct<i32>{
-				.value = 10,
-			},
-			SomeStruct<f32>{
-				.value = 32.f
-			}
-		);
-
-		context.world.is_pending_destruction = true;
-	}
-};
+#include <chrono>
+#include <mutex>
 
 auto main() -> int {
-	using namespace ecs;
+	using Task = task::Task;
 
-	const AccessRequirements a{
-		.modifies = CompMask::make<SomeStruct<f32>, SomeStruct<u32>>(),
-	};
+	Atomic<bool> any_task_executing = false;
+	Atomic<u32> count = 0;
 
-	const AccessRequirements b{
-		.modifies = CompMask::make<SomeStruct<i32>>(),
-	};
+	task::init(32);
 
-	const bool can_execute_concurrently = a.can_execute_concurrently_with(b);
-
-	fmt::println("can_execute_concurrently == {}", can_execute_concurrently);
-
-	App::build()
-		.register_system<SomeSystem<0>>(SystemDesc{
-			.event = get_event_id<event::OnInit>(),
-		})
-		.run();
-}
-
-
+	task::enqueue([&] {
 #if 0
-struct SomeOtherStruct {
-	f64 double_value = 20.0;
-};
+		#if 0
+		Array<SharedPtr<Task>> tasks;
+		for (usize i = 0; i < 500; ++i) {
+			tasks.push_back(Task::make([&] {
+				const bool previous_value = any_task_executing.exchange(true);
+				//ASSERTF(!previous_value, "Some task was executing alongside others!");
+				if (previous_value) {
+					WARN("Overlapping execution!");
+				}
 
-struct SomeOtherParentStruct {
-	f32 some_other_parent_struct_thing = 10.f;
-};
+				const auto value = ++count;
+				fmt::println("Executing {} on {}", value, std::hash<std::thread::id>{}(std::this_thread::get_id()));
 
-template <>
-struct Reflect<SomeOtherParentStruct> {
-	using Members = Members<
-		DECLARE_MEMBER(&SomeOtherParentStruct::some_other_parent_struct_thing)
-	>;
-};
+				std::this_thread::sleep_for(std::chrono::milliseconds{5});
 
-struct SomeParentStruct : public SomeOtherParentStruct {
-	f32 some_parent_struct_thing = 420.69f;
-};
-
-template <>
-struct Reflect<SomeParentStruct> {
-	using Parent = SomeOtherParentStruct;
-
-	using Members = Members<
-		DECLARE_MEMBER(&SomeParentStruct::some_parent_struct_thing)
-	>;
-};
-
-template <>
-struct Reflect<SomeOtherStruct> {
-	using Members = Members<
-		Member<"double_value", &SomeOtherStruct::double_value>
-	>;
-};
-
-struct alignas(CACHE_LINE_SIZE) Number {
-	i32 number;
-};
-
-struct SomeStruct : public SomeParentStruct {
-	f32 member = 10;
-	i32 value = 999;
-	Map<String, SomeOtherStruct> map = { {"Something", {420}}, {"SomethingElse", {69}} };
-};
-
-template <>
-struct Reflect<SomeStruct> {
-	using Parent = SomeParentStruct;
-
-	using Members = Members<
-		DECLARE_MEMBER(&SomeStruct::member, "Attr"),
-		DECLARE_MEMBER(&SomeStruct::value, {"AttributeWithValue", Number{10}}, {"Fortnite", Number{69}}),
-		DECLARE_MEMBER(&SomeStruct::map, "SomeRandomAttribute")
-	>;
-};
-
-#include <sstream>
-#include <chrono>
-#include <thread>
-#include "serialization.hpp"
-
-#include "ecs/archetype.hpp"
-
-namespace some_int_namespace_int {
-	template <typename T>
-	struct SomeType {};
-}
-
-struct alignas(CACHE_LINE_SIZE) TestStruct {
-	u8 data[CACHE_LINE_SIZE];
-
-	static inline i32 constructed_counter = 0;
-	static inline i32 destructed_counter = 0;
-
-	TestStruct() {
-		++constructed_counter;
-	}
-
-	TestStruct(TestStruct&& other) noexcept {
-		++constructed_counter;
-	}
-
-	~TestStruct() {
-		++destructed_counter;
-	}
-};
-
-template <>
-struct IsTriviallyRelocatable<TestStruct> {
-	static constexpr bool VALUE = true;
-};
-
-#include "ecs/entity_list.hpp"
-#include "threading/thread_safe_types.hpp"
-#include "ecs/app.hpp"
-#include "ecs/world.hpp"
-#include "ecs/query.hpp"
-
-
-#include <thread>
-#include <chrono>
-
-template <usize I> struct Group {};
-template <usize I> struct Comp {};
-
-Atomic<u32> count = 0;
-
-struct SomeComp {
-	String name = "Hello there I am SomeComp";
-};
-
-
-template <usize I>
-struct System {
-	[[nodiscard]] FORCEINLINE static constexpr auto get_access_requirements() {
-		return ecs::AccessRequirements{
-			//.writes = ecs::CompMask::make<SomeComp>(),
-			.reads = ecs::CompMask::make<SomeComp>(),
-		};
-	}
-
-	FORCEINLINE auto execute(ecs::World& world) -> void {
-		++this_count;
-		const auto current_count = ++count;
-		fmt::println("Executing System<{}> on thread {}. Count == {}! ThisCount == {}!", I, thread::get_this_thread_id().get_value(), current_count, this_count);
-		//std::this_thread::sleep_for(std::chrono::milliseconds{10});
-
-		if (current_count == 13) {
-			world.is_pending_destruction = true;
-			task::pending_shutdown = true;
+				any_task_executing.store(false);
+			}));
 		}
 
-		usize some_count = 0;
-		query.for_each(world, [&](const Entity& entity, const SomeComp& comp) {
-			++some_count;
-			//fmt::println("{}: {}: {} {}", ++some_count, static_cast<const void*>(&comp), comp.name, entity);
+		for (auto task : tasks) {
+			const auto priority = task->priority;
+			const auto thread = task->thread;
+
+			Array<SharedPtr<Task>> exclusives;
+			for (auto other_task : tasks) {
+				if (task != other_task) {
+					exclusives.push_back(std::move(other_task));
+				}
+			}
+
+			task::enqueue(std::move(task), priority, thread, {}, exclusives);
+		}
+		#endif
+
+		const auto start = std::chrono::high_resolution_clock::now();
+
+		task::parallel_for(100000, [&](const usize i) {
+			//fmt::println("{}", i);
 		});
-		//fmt::println("Thing for {}", some_count);
-	}
 
-	u32 this_count = 0;
+		const auto end = std::chrono::high_resolution_clock::now();
 
-	ecs::Query<SomeComp> query;
-};
+		fmt::println("Duration == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
+#endif
 
-u32 some_struct_construct_count = 0;
-u32 some_struct_destruct_count = 0;
-struct PrintStruct {
-	PrintStruct() {
-		fmt::println("Constructed {} at {}", ++some_struct_construct_count, static_cast<void*>(this));
-	}
+		Atomic<u32> some_count = 0;
+		Atomic<ThreadId> are_any_tasks_executing = ThreadId::invalid_id();
 
-	~PrintStruct() {
-		fmt::println("Destructed {} at {}", ++some_struct_destruct_count, static_cast<void*>(this));
-	}
+		Array<SharedPtr<Task>> tasks;
+		for (usize i = 0; i < 1000; ++i) {
+			tasks.push_back(Task::make([&some_count, &are_any_tasks_executing] {
+				const ThreadId currently_executing = are_any_tasks_executing.exchange(thread::get_this_thread_id());
+				ASSERTF(!currently_executing.is_valid(), "{} was executing while {} was executing!", currently_executing.get_value(), thread::get_this_thread_id().get_value());
 
-	Array<u32> things = {10, 20, 30, 40, 50};
-};
+				//std::this_thread::sleep_for(std::chrono::milliseconds{2});
+				const auto value = ++some_count;
 
-struct ConstructEntitiesSystem {
-	[[nodiscard]] static auto get_access_requirements() {
-		return ecs::AccessRequirements{
-			.modifies = ecs::CompMask::make<SomeComp, Comp<0>>(),
-		};
-	}
+				fmt::println("Executed {}", value);
 
-	FORCEINLINE auto execute(ecs::World& world) -> void {
-		fmt::println("Gonna spawn entities!");
+				are_any_tasks_executing.store(ThreadId::invalid_id());
+			}));
+		}
 
-		std::this_thread::sleep_for(std::chrono::seconds{2});
-
-#if 0
-		const auto a = world.spawn_entity(SomeComp{});
-
-		const auto b = world.spawn_entity(SomeComp{});
-#else
-		//world.spawn_entities(2, SomeComp{.name = "Message of the day!"});
 #if 01
+		for (usize i = 0; i < tasks.size(); ++i) {
+			auto clone = tasks;
+			clone.erase(clone.begin() + i);
 
-		for (usize i = 0; i < 10000; ++i) {
-			world.spawn_entity(SomeComp{}, SomeStruct{}, Array<u32>{100, 200, 400, 600, 72389290, 29093});
+			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, {}, clone);
 		}
 #else
-		ecs::Archetype& archetype = world.find_or_create_archetype(ecs::ArchetypeDesc{
-			.comps = ecs::CompMask::make<SomeComp>(),
-		}).first;
-
-		Array<Entity> entities;
-		for (usize i = 0; i < 100; ++i) {
-			entities.push_back(world.reserve_entity());
+		task::enqueue(tasks[0]);
+		for (usize i = 1; i < tasks.size(); ++i) {
+			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, Span<const SharedPtr<Task>>{{tasks[i - 1]}});
 		}
-
-		archetype.add_defaulted_entities(entities);
 #endif
-#endif
-	}
-};
 
-auto main() -> int {
-	using namespace ecs;
+		task::busy_wait_for_tasks_to_complete(tasks);
 
-	MpscQueue<Fn<u64()>> queue;
+		fmt::println("count == {}", some_count.load(std::memory_order_relaxed));
+	}, task::Priority::HIGH, task::Thread::MAIN);
 
-	const auto start = std::chrono::high_resolution_clock::now();
+	task::do_work_until_all_tasks_complete();
 
-	Array<std::thread> threads;
-	for (usize i = 0; i < 32; ++i) {
-		threads.push_back(std::thread{[&] {
-			for (u64 i = 0; i < 1000; ++i) {
-				queue.enqueue([i] { return i; });
-			}
-		}});
-	}
-
-	for (auto& thread : threads) {
-		thread.join();
-	}
-
-	const auto end = std::chrono::high_resolution_clock::now();
-
-	Optional<Fn<u64()>> value;
-	u64 aggregate_value = 0;
-	u64 count = 0;
-	u64 max = 0;
-	u64 min = std::numeric_limits<u64>::max();
-	while ((value = queue.dequeue())) {
-		const auto actual_value = (*value)();
-		aggregate_value += actual_value;
-		max = std::max(max, actual_value);
-		min = std::min(min, actual_value);
-		++count;
-	}
-	fmt::println("value == {}. count == {}, max == {}, min == {}", aggregate_value, count, max, min);
-
-	fmt::println("duration == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
-
-	std::this_thread::sleep_for(std::chrono::seconds{2});
-
-#if 0
-
-	App app;
-	const auto register_group = [&]<usize I>() {
-		if constexpr (I != 0) {
-			app.register_group<Group<I>>(Ordering{
-				.after = GroupMask::make<Group<I - 1>>(),
-			});
-		} else {
-			app.register_group<Group<I>>();
-		}
-	};
-
-	const auto register_system = [&]<usize I, typename Group>(const task::Thread thread = task::Thread::ANY) {
-		app.register_system<System<I>>(SystemDesc{
-			.group = get_group_id<Group>(),
-			.event = get_event_id<event::OnInit>(),
-			.thread = thread,
-		});
-	};
-
-	[&]<usize I>(this auto&& self) -> void {
-		static constexpr usize GROUP_INTERVAL = 100;
-		if constexpr (I % GROUP_INTERVAL == 0) {
-			register_group.operator()<I / GROUP_INTERVAL>();
-		}
-		register_system.operator()<I, Group<I / GROUP_INTERVAL>>();
-		if constexpr (I < 12) {
-			self.template operator()<I + 1>();
-		}
-	}.operator()<0>();
-
-	app.register_group<Group<10>>(Ordering{
-		.before = GroupMask::make<Group<0>>(),
-	});
-
-	app.register_system<ConstructEntitiesSystem>(SystemDesc{
-		.group = get_group_id<Group<10>>(),
-		.event = get_event_id<event::OnInit>(),
-	});
-
-	app.run();
-
-	GroupArray<u32> things;
-	for (GroupId id = 0; id < get_num_groups(); ++id) {
-		things[id] = id.get_value();
-	}
-
-	GroupArray<u32> other_things = std::move(things);
-	fmt::println("Num groups == {}", get_num_groups());
-	fmt::println("{}", other_things[GroupId{get_num_groups() - 1}]);
-
-	const auto end = std::chrono::high_resolution_clock::now();
-
-	fmt::println("FINISHED");
-	std::this_thread::sleep_for(std::chrono::seconds{2});
-
-	return EXIT_SUCCESS;
-#endif
+	task::deinit();
 }
-#endif

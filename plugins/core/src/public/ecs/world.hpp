@@ -277,6 +277,7 @@ struct World {
 			const AccessRequirements& access_requirements = get_system_access_requirements(context.currently_executing_system);
 			const bool can_construct_entity_immediately = !(archetype_desc.comps & (access_requirements.reads | access_requirements.writes)) || context.currently_executing_system_thread != std::this_thread::get_id();
 
+#if 01
 			if (can_construct_entity_immediately) {
 				//const usize index_within_archetype = archetype.add_entities(Span<const Entity>{{entity}}, std::forward<Comps>(comps)...);
 				const usize index_within_archetype = archetype.add_entity(entity, std::forward<Comps>(comps)...);
@@ -295,6 +296,16 @@ struct World {
 						.index_within_archetype = index_within_archetype,
 					});
 				});
+			}
+#endif
+			if (can_construct_entity_immediately) {// @NOTE: Potentially make this optional.
+				const usize index_within_archetype = archetype.add_entity(entity, std::forward<Comps>(comps)...);
+				entities_access->initialize_entity(entity, EntityDesc{
+					.archetype_id = archetype_id,
+					.index_within_archetype = index_within_archetype,
+				});
+			} else {
+				
 			}
 		}
 
@@ -343,6 +354,8 @@ struct World {
 	Array<SystemMask> archetype_accessing_systems;// Indexed via ArchetypeId. All the systems that require access to this archetype.
 
 	RwLock<EntityList> entities;
+
+	SharedLock<MpscMap<ArchetypeId, SharedLock<MpscQueue<WeakPtr<Task>>>>> outgoing_archetype_mod_tasks;
 
 	volatile bool is_pending_destruction = false;
 

@@ -7,6 +7,7 @@
 #include "defines.hpp"
 #include "types.hpp"
 #include "assert.hpp"
+#include "rtti.hpp"
 
 DECLARE_INT_ALIAS(ThreadId, u16);
 
@@ -236,7 +237,7 @@ template <cpts::Mutex T>
 struct ScopeLock {
 	NON_COPYABLE(ScopeLock);
 
-	[[nodiscard]] FORCEINLINE constexpr explicit ScopeLock(T& in_mutex)
+	[[nodiscard]] FORCEINLINE constexpr explicit ScopeLock(T& in_mutex [[clang::lifetimebound]])
 		: mutex{in_mutex} {
 		mutex.lock();
 	}
@@ -246,20 +247,22 @@ struct ScopeLock {
 	}
 
 private:
-	T& mutex;
+	T& [[clang::lifetimebound]] mutex;
 };
 
 template <cpts::Mutex T>
 struct UniqueLock {
-	[[nodiscard]] FORCEINLINE constexpr explicit UniqueLock(T& in_mutex)
+	[[nodiscard]] FORCEINLINE constexpr explicit UniqueLock(T& in_mutex [[clang::lifetimebound]])
 		: mutex{&in_mutex} {
 		mutex->lock();
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr explicit UniqueLock(T* in_mutex)
+	[[nodiscard]] FORCEINLINE constexpr explicit UniqueLock(T* in_mutex [[clang::lifetimebound]])
 		: mutex{in_mutex} {
 		lock();
 	}
+
+	constexpr explicit UniqueLock(NoInit) {}
 
 	[[nodiscard]] FORCEINLINE constexpr UniqueLock(UniqueLock&& other) noexcept {
 		if (this == &other) [[unlikely]] {
@@ -283,6 +286,17 @@ struct UniqueLock {
 		unlock();
 	}
 
+	// Attempts to construct a UniqueLock from try_lock(). Will return NULL_OPTIONAL on failure.
+	[[nodiscard]] FORCEINLINE static constexpr auto from_try_lock(T& mutex [[clang::lifetimebound]]) -> Optional<UniqueLock> requires requires { { std::declval<T&>().try_lock() } -> std::same_as<bool>; } {
+		if (mutex.try_lock()) {
+			Optional<UniqueLock> out{NO_INIT};
+			out->mutex = &mutex;
+			return out;
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
 	FORCEINLINE auto lock() -> void {
 		if (mutex) {
 			mutex->lock();
@@ -297,22 +311,105 @@ struct UniqueLock {
 	}
 
 private:
-	T* mutex;
+	T* [[clang::lifetimebound]] mutex;
 };
 
 template <cpts::SharedMutex T>
-struct UniqueSharedLock {
-	[[nodiscard]] FORCEINLINE constexpr explicit UniqueSharedLock(T& in_mutex)
-		: mutex{&in_mutex} {
-		mutex->lock_shared();
+struct ScopeExclusiveLock {
+	NON_COPYABLE(ScopeExclusiveLock);
+
+	[[nodiscard]] FORCEINLINE constexpr explicit ScopeExclusiveLock(T& in_mutex [[clang::lifetimebound]])
+		: mutex{in_mutex} {
+		mutex.lock();
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr explicit UniqueSharedLock(T* in_mutex)
+	FORCEINLINE ~ScopeExclusiveLock() {
+		mutex.unlock();
+	}
+
+private:
+	T& [[clang::lifetimebound]] mutex;
+};
+
+template <cpts::SharedMutex T>
+struct UniqueExclusiveLock {
+	FORCEINLINE constexpr explicit UniqueExclusiveLock(T& in_mutex [[clang::lifetimebound]])
+		: mutex{&in_mutex} {
+		mutex->lock();
+	}
+
+	FORCEINLINE constexpr explicit UniqueExclusiveLock(T* in_mutex [[clang::lifetimebound]])
 		: mutex{in_mutex} {
 		lock();
 	}
 
-	[[nodiscard]] FORCEINLINE constexpr UniqueSharedLock(UniqueSharedLock&& other) noexcept {
+	FORCEINLINE constexpr explicit UniqueExclusiveLock(NoInit) {}
+
+	FORCEINLINE constexpr UniqueExclusiveLock(UniqueExclusiveLock&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+		mutex = other.mutex;
+		other.mutex = null;
+	}
+
+	FORCEINLINE auto operator=(UniqueExclusiveLock&& other) noexcept -> UniqueExclusiveLock& {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+		unlock();
+
+		mutex = other.mutex;
+		other.mutex = null;
+	}
+
+	FORCEINLINE ~UniqueExclusiveLock() {
+		unlock();
+	}
+
+	// Attempts to construct a UniqueLock from try_lock(). Will return NULL_OPTIONAL on failure.
+	[[nodiscard]] FORCEINLINE static constexpr auto from_try_lock(T& mutex [[clang::lifetimebound]]) -> Optional<UniqueExclusiveLock> requires requires { { std::declval<T&>().try_lock() } -> std::same_as<bool>; } {
+		if (mutex.try_lock()) {
+			Optional<UniqueExclusiveLock> out{NO_INIT};
+			out->mutex = &mutex;
+			return out;
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
+	FORCEINLINE auto lock() -> void {
+		if (mutex) {
+			mutex->lock();
+		}
+	}
+
+	FORCEINLINE auto unlock() -> void {
+		if (mutex) {
+			mutex->unlock();
+			mutex = null;
+		}
+	}
+
+private:
+	T* [[clang::lifetimebound]] mutex;
+};
+
+template <cpts::SharedMutex T>
+struct UniqueSharedLock {
+	FORCEINLINE constexpr explicit UniqueSharedLock(T& in_mutex [[clang::lifetimebound]])
+		: mutex{&in_mutex} {
+		mutex->lock_shared();
+	}
+
+	FORCEINLINE constexpr explicit UniqueSharedLock(T* in_mutex [[clang::lifetimebound]])
+		: mutex{in_mutex} {
+		lock();
+	}
+
+	FORCEINLINE constexpr explicit UniqueSharedLock(NoInit) {}
+
+	FORCEINLINE constexpr UniqueSharedLock(UniqueSharedLock&& other) noexcept {
 		if (this == &other) [[unlikely]] {
 			return;
 		}
@@ -337,6 +434,17 @@ struct UniqueSharedLock {
 		unlock();
 	}
 
+	// Attempts to construct a UniqueSharedLock from try_lock_shared(). Will return NULL_OPTIONAL on failure.
+	[[nodiscard]] FORCEINLINE static constexpr auto from_try_lock(T& mutex [[clang::lifetimebound]]) -> Optional<UniqueSharedLock> requires requires { { std::declval<T&>().try_lock_shared() } -> std::same_as<bool>; } {
+		if (mutex.try_lock_shared()) {
+			Optional<UniqueSharedLock> out{NO_INIT};
+			out->mutex = &mutex;
+			return out;
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
 	FORCEINLINE auto lock() -> void {
 		if (mutex) {
 			mutex->lock_shared();
@@ -351,7 +459,7 @@ struct UniqueSharedLock {
 	}
 
 private:
-	T* mutex;
+	T* [[clang::lifetimebound]] mutex;
 };
 
 // Locks an shared mutex for read access within the scope.
@@ -359,7 +467,7 @@ template <cpts::SharedMutex T>
 struct ScopeSharedLock {
 	NON_COPYABLE(ScopeSharedLock);
 
-	[[nodiscard]] FORCEINLINE constexpr explicit ScopeSharedLock(T& in_mutex)
+	[[nodiscard]] FORCEINLINE constexpr explicit ScopeSharedLock(T& in_mutex [[clang::lifetimebound]])
 		: mutex{in_mutex} {
 		mutex.lock_shared();
 	}
@@ -369,137 +477,190 @@ struct ScopeSharedLock {
 	}
 
 private:
-	T& mutex;
+	T& [[clang::lifetimebound]] mutex;
 };
 
-// Stores T and Mutex. Enforces that you lock the mutex before accessing the object to prevent screw-ups.
+// Moveable scoped access to the owner. Locks on construction, unlocks on destruction.
+// @NOTE: Internal-use only.
+template <typename Owner, cpts::Invokable<Owner&> ValueFn, cpts::Invokable<Owner&> LockFn, cpts::Invokable<Owner&> UnlockFn>
+struct UniqueAccess {
+	static_assert(!std::same_as<void, decltype(ValueFn{}(std::declval<Owner&>()))>);
+	static_assert(std::is_reference_v<decltype(ValueFn{}(std::declval<Owner&>()))>);
+
+	constexpr explicit UniqueAccess(Owner& in_owner [[clang::lifetimebound]])
+		: owner{&in_owner} {
+		lock();
+	}
+
+	constexpr UniqueAccess(UniqueAccess&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+
+		owner = other.owner;
+		other.owner = null;
+	}
+
+	constexpr auto operator=(UniqueAccess&& other) noexcept -> UniqueAccess& {
+		if (this == &other) [[unlikely]] {
+			return *this;
+		}
+
+		owner = other.owner;
+		other.owner = null;
+
+		return *this;
+	}
+
+	constexpr ~UniqueAccess() {
+		unlock();
+	}
+
+	[[nodiscard]] constexpr auto has_value() const -> bool {
+		return !!owner;
+	}
+
+	[[nodiscard]] constexpr auto operator->() const -> auto* {
+		ASSERT(has_value());
+		return &**this;
+	}
+
+	[[nodiscard]] constexpr auto operator*() const -> decltype(auto) {
+		ASSERT(has_value());
+		return (ValueFn{}(*owner));
+	}
+
+	// Unlocks and invalidates access. Will not double-unlock on destruction.
+	constexpr auto unlock() -> bool {
+		if (owner) {
+			UnlockFn{}(*owner);
+			owner = null;
+			return true;
+		}
+		return false;
+	}
+
+private:
+	constexpr auto lock() -> void {
+		ASSERT(owner);
+		LockFn{}(*owner);
+	}
+
+	Owner* [[clang::lifetimebound]] owner;
+};
+
 template <typename T, cpts::Mutex MutexType = Mutex>
 struct Lock {
 	NON_COPYABLE(Lock);
 
-	template<typename... Args> requires std::constructible_from<T, Args&&...>
-	FORCEINLINE constexpr explicit Lock(Args&&... args)
+	constexpr Lock() = default;
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr explicit Lock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
-	template<typename... Args>
-	FORCEINLINE auto lock(cpts::Invokable<T&, Args&&...> auto&& func, Args&&... args) -> decltype(auto) {
-		ScopeLock lock{mutex};
-		return (std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...));
+	template <typename Self>
+	[[nodiscard]] constexpr auto lock(this Self&& self) {
+		using UniqueAccess = UniqueAccess<
+			std::remove_reference_t<Self>,
+			decltype([](Self& self) -> auto& { self.value; }),
+			decltype([](Self& self) { self.mutex.lock(); }),
+			decltype([](Self& self) { self.mutex.unlock(); })
+		>;
+		return UniqueAccess{self};
 	}
-
-	//~
-	// Unsafe.
-	[[nodiscard]] FORCEINLINE constexpr auto get() -> T& { return value; }
-	[[nodiscard]] FORCEINLINE constexpr auto get() const -> const T& { return value; }
-
-	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() -> MutexType& { return mutex; }
-	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() const -> const MutexType& { return mutex; }
-	//~
 
 private:
 	T value;
-	MutexType mutex;
+	mutable MutexType mutex;
 };
 
-// Stores T and Mutex. Enforces that you lock the mutex before accessing the object to prevent screw-ups.
-template<typename T, cpts::SharedMutex SharedMutexType = SharedMutex>
-struct RwLock {
-	NON_COPYABLE(RwLock);
+template <typename T, cpts::SharedMutex SharedMutexType = SharedMutex>
+struct SharedLock {
+	NON_COPYABLE(SharedLock);
 
-	FORCEINLINE constexpr RwLock() = default;
+	constexpr SharedLock() = default;
 
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	FORCEINLINE constexpr explicit RwLock(Args&&... args)
+	constexpr explicit SharedLock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
-	template <typename... Args>
-	FORCEINLINE auto read(cpts::Invokable<const T&, Args...> auto&& func, Args&&... args) const -> decltype(auto) {
-		ScopeSharedLock lock{mutex};
-		return (std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...));
+	[[nodiscard]] constexpr auto lock_exclusive() {
+		using UniqueAccess = UniqueAccess<
+			SharedLock,
+			decltype([](SharedLock& self) -> T& { return self.value; }),
+			decltype([](SharedLock& self) { self.mutex.lock(); }),
+			decltype([](SharedLock& self) { self.mutex.unlock(); })
+		>;
+		return UniqueAccess{*this};
 	}
 
-	template <typename... Args>
-	FORCEINLINE auto write(cpts::Invokable<T&, Args&&...> auto&& func, Args&&... args) -> decltype(auto) {
-		ScopeLock lock{mutex};
-		return (std::invoke(FORWARD_AUTO(func), value, std::forward<Args>(args)...));
+	template <typename Self>
+	[[nodiscard]] constexpr auto lock_shared(this Self&& self) {
+		using UniqueAccess = UniqueAccess<
+			std::remove_reference_t<Self>,
+			decltype([](Self& self) -> auto& { return self.value; }),
+			decltype([](Self& self) { self.mutex.lock_shared(); }),
+			decltype([](Self& self) { self.mutex.unlock_shared(); })
+		>;
+		return UniqueAccess{self};
 	}
 
-	struct ScopedReadAccess {
-		NON_COPYABLE(ScopedReadAccess);
-
-		explicit ScopedReadAccess(const RwLock& owner [[clang::lifetimebound]])
-			: owner{owner} {
-			owner.mutex.lock_shared();
-		}
-
-		FORCEINLINE ~ScopedReadAccess() {
-			owner.mutex.unlock_shared();
-		}
-
-		[[nodiscard]] FORCEINLINE auto operator*() const -> const T& {
-			return owner.value;
-		}
-
-		[[nodiscard]] FORCEINLINE auto operator->() const -> const T* {
-			return &owner.value;
-		}
-
-		[[nodiscard]] FORCEINLINE auto get() const -> const T& {
-			return **this;
-		}
-
-	private:
-		const RwLock& [[clang::lifetimebound]] owner;
-	};
-
-	struct ScopedWriteAccess {
-		NON_COPYABLE(ScopedWriteAccess);
-
-		explicit ScopedWriteAccess(RwLock& owner [[clang::lifetimebound]])
-			: owner{owner} {
-			owner.mutex.lock();
-		}
-
-		FORCEINLINE ~ScopedWriteAccess() {
-			owner.mutex.unlock();
-		}
-
-		[[nodiscard]] FORCEINLINE auto operator*() const -> T& {
-			return owner.value;
-		}
-
-		[[nodiscard]] FORCEINLINE auto operator->() const -> T* {
-			return &owner.value;
-		}
-
-		[[nodiscard]] FORCEINLINE auto get() const -> T& {
-			return **this;
-		}
-
-	private:
-		RwLock& [[clang::lifetimebound]] owner;
-	};
-
-	[[nodiscard]] FORCEINLINE auto read() const {
-		return ScopedReadAccess{*this};
+	// Retrieves the value without locking. Unsafe!
+	[[nodiscard]] constexpr auto get_unsafe(this auto&& self) -> auto& {
+		return self.value;
 	}
-
-	[[nodiscard]] FORCEINLINE auto write() {
-		return ScopedWriteAccess{*this};
-	}
-
-	//~
-	// Unsafe.
-	[[nodiscard]] FORCEINLINE constexpr auto get() -> T& { return value; }
-	[[nodiscard]] FORCEINLINE constexpr auto get() const -> const T& { return value; }
-
-	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() -> SharedMutexType& { return mutex; }
-	[[nodiscard]] FORCEINLINE constexpr auto get_mutex() const -> const SharedMutexType& { return mutex; }
-	//~
 
 private:
 	T value;
 	mutable SharedMutexType mutex;
+};
+
+template <typename T, cpts::SharedMutex SharedMutexType = SharedMutex>
+struct RwLock {
+	NON_COPYABLE(RwLock);
+
+	constexpr RwLock() = default;
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr explicit RwLock(Args&&... args)
+		: value{std::forward<Args>(args)...} {}
+
+	// Acquires exclusive write-access.
+	[[nodiscard]] constexpr auto write() {
+		using UniqueAccess = UniqueAccess<
+			RwLock,
+			decltype([](RwLock& self) -> T& { return self.value; }),
+			decltype([](RwLock& self) { self.mutex.lock(); }),
+			decltype([](RwLock& self) { self.mutex.unlock(); })
+		>;
+		return UniqueAccess{*this};
+	}
+
+	// Acquires shared read-access.
+	[[nodiscard]] constexpr auto read() const {
+		using UniqueAccess = UniqueAccess<
+			const RwLock,
+			decltype([](const RwLock& self) -> const T& { return self.value; }),
+			decltype([](const RwLock& self) { self.mutex.lock_shared(); }),
+			decltype([](const RwLock& self) { self.mutex.unlock_shared(); })
+		>;
+		return UniqueAccess{*this};
+	}
+
+private:
+	T value;
+	mutable SharedMutexType mutex;
+};
+
+enum class AtomicAcquisitionResult : u8 {
+	FOUND, ENQUEUED
+};
+
+template <typename T>
+struct AtomicFindOrEnqueueResult {
+	T& value;
+	AtomicAcquisitionResult result;
 };
 
 // Atomic multiple producer single consume linked-list.
@@ -581,13 +742,16 @@ struct MpscList {
 
 	// Thread-safe.
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	[[nodiscard]] constexpr auto find_or_enqueue(cpts::InvokableReturns<bool, const T&> auto&& predicate, Args&&... args) -> T& {
+	[[nodiscard]] constexpr auto find_or_enqueue(cpts::InvokableReturns<bool, const T&> auto&& predicate, Args&&... args) -> AtomicFindOrEnqueueResult<const T> {
 		Node* old_head = head.load(std::memory_order_relaxed);
 
 		// First check if any current nodes have this value.
 		for (Node* node = old_head; node; node = node->next) {
 			if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
-				return node->value;
+				return {
+					.value = node->value,
+					.result = AtomicAcquisitionResult::FOUND,
+				};
 			}
 		}
 
@@ -601,7 +765,10 @@ struct MpscList {
 			for (Node* node = new_head->next; node && node != previous_next_node; node = node->next) {
 				if (std::invoke(FORWARD_AUTO(predicate), node->value)) {
 					delete new_head;
-					return node->value;
+					return {
+						.value = node->value,
+						.result = AtomicAcquisitionResult::FOUND,
+					};
 				}
 			}
 
@@ -610,7 +777,10 @@ struct MpscList {
 			std::this_thread::yield();
 		}
 
-		return new_head->value;
+		return {
+			.value = new_head->value,
+			.result = AtomicAcquisitionResult::ENQUEUED,
+		};
 	}
 
 	// NOT thread-safe.
@@ -737,7 +907,102 @@ struct MpscQueue {
 		}
 	}
 
+	// NOT thread-safe.
+	constexpr auto for_each(cpts::Invokable<T&> auto&& fn) -> void {
+		for (Node* node = head.load(std::memory_order_relaxed); node; node = node->next) {
+			const u32 count = node->count.load(std::memory_order_relaxed);
+			for (u32 i = 0; i < count; ++i) {
+				std::invoke(FORWARD_AUTO(fn), reinterpret_cast<T*>(node->data)[i]);
+			}
+		}
+	}
+
+	constexpr auto for_each_with_break(cpts::InvokableReturns<bool, T&> auto&& fn) -> bool {
+		for (Node* node = head.load(std::memory_order_relaxed); node; node = node->next) {
+			const u32 count = node->count.load(std::memory_order_relaxed);
+			for (u32 i = 0; i < count; ++i) {
+				if (!std::invoke(FORWARD_AUTO(fn), reinterpret_cast<T*>(node->data)[i])) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	// Thread-safe but requires locking for accuracy.
+	[[nodiscard]] constexpr auto is_empty(this const MpscQueue& self) -> bool {
+		return self.head.load(std::memory_order_relaxed)->count.load(std::memory_order_relaxed) == 0;
+	}
+
+	// NOT thread-safe. Does not maintain order. Implements swap.
+	constexpr auto remove_at(this MpscQueue& self, Node* node, const u32 index) -> bool {
+		ASSERT(node);
+		ASSERT(node->count.load(std::memory_order_relaxed) > index);
+
+		Node* head = self.head.load(std::memory_order_relaxed);
+		ASSERT(head);
+
+		const u32 swap_index = --head->count;
+		if constexpr (!std::is_trivially_destructible_v<T>) {
+			std::destroy_at(&reinterpret_cast<T*>(head->data)[index]);
+		}
+
+		if (node != head || index != swap_index) {
+			T& dst = reinterpret_cast<T*>(node->data)[index];
+			T& src = reinterpret_cast<T*>(head->data)[swap_index];
+			if constexpr (cpts::TriviallyRelocatable<T>) {
+				memcpy(&src, &dst, sizeof(T));
+			} else {
+				static_assert(std::is_move_constructible_v<T>);
+
+				std::construct_at(&dst, std::move(src));
+				std::destroy_at(&src);
+			}
+		}
+
+		if (swap_index == 0) {// Removed last element in head. Swap out with next.
+			self.head.store(head->next, std::memory_order_relaxed);
+			delete head;
+
+			return node == head;
+		}
+
+		return false;
+	}
+
 	Atomic<Node*> head;
+};
+
+// A closeable multi producer single consumer set.
+template <typename T, usize N = 32, typename Hasher = std::hash<T>, typename EqualOp = std::equal_to<T>>
+struct MpscSet {
+	[[nodiscard]] constexpr auto find_or_enqueue(T value) -> AtomicFindOrEnqueueResult<const T> {
+		return slots[Hasher{}(value) % N].find_or_enqueue([&](const T& other) { return EqualOp{}(value, other); }, std::move(value));
+	}
+
+	[[nodiscard]] constexpr auto find_or_add(T value) -> const T& {
+		return find_or_enqueue(std::move(value)).value;
+	}
+
+	[[nodiscard]] constexpr auto find(const T& value) -> const T* {
+		return slots[Hasher{}(value) % N].find([&](const T& other) { return EqualOp{}(value, other); });
+	}
+
+	[[nodiscard]] constexpr auto find_and_dequeue(const T& value) -> Optional<T> {
+		return slots[Hasher{}(value) % N].find_and_dequeue([&](const T& other) { return EqualOp{}(value, other); });
+	}
+
+	// NOT thread-safe.
+	constexpr auto for_each(cpts::Invokable<T&> auto&& fn) -> void {
+		for (usize i = 0; i < N; ++i) {
+			using Node = MpscList<T>::Node;
+			for (Node* node = slots[i].head.load(std::memory_order_relaxed); node; node = node->next) {
+				std::invoke(FORWARD_AUTO(fn), node->value);
+			}
+		}
+	}
+
+	MpscList<T> slots[N];
 };
 
 template <typename Key, typename T, usize N = 32, typename Hasher = std::hash<Key>, typename EqualOp = std::equal_to<Key>>
@@ -750,13 +1015,17 @@ struct MpscMap {
 		T value;
 	};
 
-	[[nodiscard]] constexpr auto find_or_add(Key key) -> T& {
+	[[nodiscard]] constexpr auto find_or_enqueue(Key key) -> AtomicFindOrEnqueueResult<const T> {
 		const usize index = Hasher{}(key) % N;
 
 		return slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key)).value;
 	}
 
-	[[nodiscard]] constexpr auto find(const Key& key) -> T* {
+	[[nodiscard]] constexpr auto find_or_add(Key key) -> const T& {
+		return find_or_enqueue(std::move(key)).value;
+	}
+
+	[[nodiscard]] constexpr auto find(const Key& key) -> const T* {
 		const usize index = Hasher{}(key) % N;
 		KeyValue* found = slots[index].find([&](const KeyValue& other) { return EqualOp{}(key, other.key); });
 		return found ? &found->value : null;
@@ -774,130 +1043,353 @@ struct MpscMap {
 	MpscList<KeyValue> slots[N];
 };
 
-#if 0
-// Multiple producer / consumer linked-list with atomic searches. Only works on 64 bit architecture.
-template <typename T>
-struct AtomicList {
-	static_assert(sizeof(T*) == sizeof(u64), "AtomicList only works on 64-bit architecture!");
-	static_assert(alignof(T*) == alignof(u64));
+enum class RcMode {
+	FAST, THREAD_SAFE,
+};
 
-	static constexpr usize REFCOUNT_BITS = 16;
-	static constexpr usize REFCOUNT_OFFSET = 64 - REFCOUNT_BITS;
-	static constexpr u64 REFCOUNT_MASK = UINT64_MAX >> REFCOUNT_BITS;
-	static constexpr u64 ADDRESS_MASK = UINT64_MAX & ~REFCOUNT_MASK;
+template <typename T, RcMode MODE = RcMode::THREAD_SAFE>
+struct ControlBlock {
+	using RefCount = std::conditional_t<(MODE == RcMode::THREAD_SAFE), Atomic<u32>, u32>;
 
-	struct Node {
-		T value;
-		Node* next = null;
-		Node* previous = null;
-	};
-
-	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	auto enqueue(this AtomicList& self, Args&&... args) -> void {
-		Node* new_head = new Node{
-			.value{std::forward<Args>(args)...},
-			.next = self.head.load(std::memory_order_relaxed),
-			.previous = null,
-		};
-
-		while (!self.head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-			std::this_thread::yield();
+	auto decrement_refcount() -> bool {
+		if (--refcount == 0) {
+			delete this;
+			return true;
 		}
 
-		Node* expected = null;
-		self.tail.compare_exchange_strong(expected, new_head->next);
+		return false;
 	}
 
-	auto dequeue(this AtomicList& self) -> Optional<T> {
-
+	auto increment_refcount() -> void {
+		++refcount;
 	}
 
-	Atomic<Node*> head = null;
-	Atomic<Node*> tail = null;
+	auto add_refcount(const std::integral auto count) {
+		return refcount += count;
+	}
+
+	T value;
+	RefCount refcount = 1;
+};
+
+template <typename T, RcMode MODE = RcMode::THREAD_SAFE>
+struct RefCountPtr {
+	using ControlBlock = ControlBlock<T, MODE>;
+
+	constexpr RefCountPtr() : cb{null} {}
+
+	constexpr RefCountPtr(std::nullptr_t) : cb{null} {}
+
+	constexpr explicit RefCountPtr(ControlBlock* cb)
+		: cb{cb} {}
+
+	constexpr RefCountPtr(const RefCountPtr& other) {
+		cb = other.cb;
+		increment_refcount();
+	}
+
+	constexpr RefCountPtr(RefCountPtr&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+
+		cb = other.cb;
+		other.cb = null;
+	}
+
+	constexpr auto operator=(const RefCountPtr& other) -> RefCountPtr& {
+		decrement_refcount();
+		cb = other.cb;
+		increment_refcount();
+	}
+
+	constexpr auto operator=(RefCountPtr&& other) noexcept -> RefCountPtr& {
+		if (this == &other) [[unlikely]] {
+			return *this;
+		}
+
+		decrement_refcount();
+		cb = other.cb;
+		other.cb = null;
+
+		return *this;
+	}
+
+	constexpr ~RefCountPtr() {
+		decrement_refcount();
+	}
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	[[nodiscard]] static constexpr auto make(Args&&... args) -> RefCountPtr {
+		return RefCountPtr{new ControlBlock{
+				.value{std::forward<Args>(args)...},
+				.refcount = 1,
+			}
+		};
+	}
+
+	constexpr auto increment_refcount() -> void {
+		if (cb) {
+			cb->increment_refcount();
+		}
+	}
+
+	constexpr auto decrement_refcount() -> bool {
+		if (cb) {
+			cb->decrement_refcount();
+		}
+
+		return false;
+	}
+
+	[[nodiscard]] constexpr auto operator*() const -> T& {
+		ASSERT(cb);
+		return cb->value;
+	}
+
+	[[nodiscard]] constexpr auto operator->() const -> T* {
+		return &(**this);
+	}
+
+	[[nodiscard]] constexpr auto get() const -> T* {
+		return cb ? &cb->value : null;
+	}
+
+	[[nodiscard]] constexpr auto is_valid() const -> bool {
+		return !!cb;
+	}
+
+	[[nodiscard]] constexpr operator bool() const {
+		return is_valid();
+	}
+
+	[[nodiscard]] constexpr auto operator!() const -> bool {
+		return !cb;
+	}
+
+	ControlBlock* cb;
+};
+
+#if 0
+// Atomic shared ptr using 2-layer reference-counting.
+template <typename T>
+struct AtomicRefCountPtr {
+	static_assert(sizeof(T*) == sizeof(u64), "AtomicRefCountPtr only works on 64-bit architecture!");
+	static_assert(alignof(T*) == alignof(u64));
+
+	static constexpr usize REFCOUNT_OFFSET = 48;
+	static constexpr u64 REFCOUNT_MASK = UINT64_MAX >> (64 - REFCOUNT_OFFSET);
+	static constexpr u64 ADDRESS_MASK = ~REFCOUNT_MASK;
+
+	struct ControlBlock {
+		union {
+			T value;
+		};
+		Atomic<u32> refcount = 1;
+	};
+
+	
+
+	Atomic<u64> cb;// First 48 bits are pointer. Second 16 bits are local ref-count.
 };
 #endif
 
 template <typename T>
-struct AtomicSharedPtr {
-	
-};
+struct std::atomic<RefCountPtr<T>> {
+	using ControlBlock = typename RefCountPtr<T>::ControlBlock;
 
-template <typename T>
-struct AtomicListNode {
-	T value;
-	u64 next = NULL;
-};
-
-template <typename T, typename Allocator = std::allocator<AtomicListNode<T>>>
-struct AtomicList {
-	static_assert(sizeof(T*) == sizeof(u64));
+	static_assert(sizeof(T*) == sizeof(u64), "Atomic<RefCountPtr> only works on 64-bit architecture!");
 	static_assert(alignof(T*) == alignof(u64));
 
-	// Avoids the ABA problem by using the unused 16 bits on the pointer as a tag.
-	static constexpr usize COUNT_OFFSET = 48;
-	static constexpr u64 ADDRESS_MASK = UINT64_MAX >> 16;
-	static constexpr u64 COUNT_MASK = UINT64_MAX & ~ADDRESS_MASK;
+	static constexpr usize REFCOUNT_OFFSET = 48;
+	static constexpr u64 REFCOUNT_MASK = UINT64_MAX >> (64 - REFCOUNT_OFFSET);
+	static constexpr u64 ADDRESS_MASK = ~REFCOUNT_MASK;
 
-	using Node = AtomicListNode<T>;
+	NON_COPYABLE(atomic<RefCountPtr<T>>);
 
-	// NOT thread-safe.
-	~AtomicList() {
-		constexpr auto to_node = [](const u64 value) { return reinterpret_cast<Node*>(value & ADDRESS_MASK); };
+	constexpr atomic<RefCountPtr<T>>()
+		: cb{NULL} {}
 
-		Node* node = to_node(head.load(std::memory_order_relaxed));
-		while (node) {
-			if constexpr (!std::is_trivially_destructible_v<Node>) {
-				std::destroy_at(node);
-			}
+	constexpr atomic<RefCountPtr<T>>(std::nullptr_t)
+		: cb{NULL} {}
 
-			allocator.deallocate(node, 1);
-
-			node = to_node(node->next);
+	constexpr atomic<RefCountPtr<T>>(RefCountPtr<T> value)
+		: cb{value.cb} {
+		if (value.cb) {
+			value.cb->increment_refcount();
 		}
 	}
 
-	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	auto enqueue(this AtomicList& self, Args&&... args) -> void {
-		auto* new_head = new(self.allocator.allocate(1)) Node{
-			.value{std::forward<Args>(args)...},
-			.next = self.head.load(std::memory_order_relaxed),
-		};
-
-		const u64 new_head_value = (reinterpret_cast<u64>(new_head) & ADDRESS_MASK) | static_cast<u64>(self.dequeue_counter.load(std::memory_order_acquire)) << COUNT_OFFSET;
-		while (!self.head.compare_exchange_weak(new_head->next, new_head_value, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-			std::this_thread::yield();
-		}
+	~atomic<RefCountPtr<T>>() {
+		store(null, std::memory_order_relaxed);
 	}
 
-	[[nodiscard]] auto dequeue(this AtomicList& self) -> Optional<T> {
-		u64 head = self.head.load(std::memory_order_relaxed);
-
+	auto increment_local_refcount() -> u64 {
+		u64 old_cb = cb.load(std::memory_order_relaxed);
+		u64 new_cb;
 		while (true) {
-			if (head == NULL) {
-				return NULL_OPTIONAL;
-			}
-
-			Node* node = reinterpret_cast<Node*>(head & ADDRESS_MASK);
-			if (self.head.compare_exchange_weak(head, node->next, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-				Optional<T> out{std::move(node->value)};
-				self.dequeue_counter.fetch_add(1, std::memory_order_consume);
-
-				if constexpr (!std::is_trivially_destructible_v<Node>) {
-					std::destroy_at(node);
-				}
-
-				self.allocator.deallocate(node, 1);
-
-				return out;
+			new_cb = (old_cb & ADDRESS_MASK) | ((old_cb >> REFCOUNT_OFFSET) + 1) << REFCOUNT_OFFSET;
+			if (cb.compare_exchange_weak(old_cb, new_cb, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+				break;
 			}
 
 			std::this_thread::yield();
+		}
+
+		return new_cb;
+	}
+
+	auto decrement_local_refcount(const u64 previous_cb) -> u64 {
+		u64 old_cb = previous_cb;
+		while (true) {
+			u64 new_cb = (old_cb & ADDRESS_MASK) | ((old_cb >> REFCOUNT_OFFSET) - 1) << REFCOUNT_OFFSET;
+			if (cb.compare_exchange_weak(old_cb, new_cb)) {
+				return new_cb;
+			}
+
+			// The pointer has changed due to a store operation. The local refcount has been moved onto the global refcount on our behalf so decrement it here.
+			if ((old_cb & ADDRESS_MASK) != (previous_cb & ADDRESS_MASK)) {
+				reinterpret_cast<ControlBlock*>(previous_cb & ADDRESS_MASK)->decrement_refcount();
+				return old_cb;
+			}
 		}
 
 		UNREACHABLE;
 	}
 
-	Atomic<u64> head = NULL;
-	Atomic<u16> dequeue_counter = 0;
-	NO_UNIQUE_ADDRESS Allocator allocator;
+	auto load(const std::memory_order memory_order) -> RefCountPtr<T> {
+		auto current_cb_value = increment_local_refcount();
+		auto* current_cb = reinterpret_cast<ControlBlock*>(current_cb_value & ADDRESS_MASK);
+		current_cb->increment_refcount();
+		RefCountPtr<T> result{current_cb};
+		decrement_local_refcount(current_cb_value);
+		return result;
+	}
+
+	auto store(const RefCountPtr<T>& desired, const std::memory_order memory_order) -> RefCountPtr<T> {
+		const u64 new_cb_value = (reinterpret_cast<u64>(desired.cb) & ADDRESS_MASK) | 0ull << REFCOUNT_OFFSET;
+		const u64 old_cb_value = cb.exchange(new_cb_value, memory_order);
+
+		auto* old_cb = reinterpret_cast<ControlBlock*>(old_cb_value & ADDRESS_MASK);
+		const auto old_cb_local_refcount = old_cb_value >> REFCOUNT_OFFSET;
+
+		old_cb->add_refcount(old_cb_local_refcount);
+		const bool destructed = old_cb->decrement_refcount();
+
+		if (destructed) {
+			return null;
+		} else {
+			return RefCountPtr<T>{old_cb};
+		}
+	}
+
+	auto compare_exchange_weak(RefCountPtr<T>& expected, const RefCountPtr<T>& desired, const std::memory_order success, const std::memory_order failure) -> bool {
+		#if 0
+		u64 old_cb_value = cb.load(std::memory_order_relaxed);
+		const u64 desired_cb_value = (reinterpret_cast<u64>(desired.cb) & ADDRESS_MASK) | ((old_cb_value >> REFCOUNT_OFFSET) + 1) << REFCOUNT_OFFSET;
+		if (cb.compare_exchange_weak(old_cb_value, desired_cb_value, success, failure)) {
+			auto* old_cb = reinterpret_cast<ControlBlock*>(old_cb_value & ADDRESS_MASK);
+			const auto old_cb_local_refcount = old_cb_value >> REFCOUNT_OFFSET;
+
+			old_cb->add_refcount(old_cb_local_refcount);
+			old_cb->decrement_refcount();
+			return true;
+		} else {
+			//decrement_local_refcount(old_cb_value);
+			return false;
+		}
+		#endif
+
+		u64 old_cb_value = increment_local_refcount();
+		const u64 desired_cb_value = reinterpret_cast<u64>(desired.cb) & ADDRESS_MASK;
+		const bool result = cb.compare_exchange_weak(old_cb_value, desired_cb_value, success, failure);
+		auto* old_cb = reinterpret_cast<ControlBlock*>(old_cb_value & ADDRESS_MASK);
+
+		if (result) {
+			const auto old_cb_local_refcount = old_cb_value >> REFCOUNT_OFFSET;
+
+			old_cb->add_refcount(old_cb_local_refcount);
+			old_cb->decrement_refcount();
+			return true;
+		} else {
+			expected = RefCountPtr<T>{old_cb};
+			decrement_local_refcount(old_cb_value);
+		}
+
+		return false;
+	}
+
+	Atomic<u64> cb;// First 48 bits are pointer. Second 16 bits are local ref-count.
 };
+
+#if 01
+template <typename T>
+struct AtomicList {
+	struct Node {
+		template <typename... Args> requires std::constructible_from<T, Args&&...>
+		constexpr Node(SharedPtr<Node> next, Args&&... args)
+			: value{std::forward<Args>(args)...}, next{std::move(next)} {}
+
+		T value;
+		Atomic<SharedPtr<Node>> next = null;
+	};
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr auto enqueue(Args&&... args) -> void {
+		auto new_head = std::make_shared<Node>(head.load(std::memory_order_relaxed), std::forward<Args>(args)...);
+		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+	}
+
+	[[nodiscard]] constexpr auto dequeue() -> Optional<T> {
+		auto old_head = head.load(std::memory_order_relaxed);
+		while (old_head && !head.compare_exchange_weak(old_head, old_head->next, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+
+		if (old_head) {
+			return {std::move(old_head->value)};
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
+	Atomic<SharedPtr<Node>> head = null;
+};
+#else
+template <typename T>
+struct AtomicList {
+	struct Node {
+		template <typename... Args> requires std::constructible_from<T, Args&&...>
+		constexpr Node(RefCountPtr<Node> next, Args&&... args)
+			: value{std::forward<Args>(args)...}, next{std::move(next)} {}
+
+		T value;
+		RefCountPtr<Node> next = null;
+	};
+
+	template <typename... Args> requires std::constructible_from<T, Args&&...>
+	constexpr auto enqueue(Args&&... args) -> void {
+		auto new_head = RefCountPtr<Node>::make(head.load(std::memory_order_relaxed), std::forward<Args>(args)...);
+		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+	}
+
+	constexpr auto dequeue() -> Optional<T> {
+		auto old_head = head.load(std::memory_order_relaxed);
+		while (old_head && !head.compare_exchange_weak(old_head, old_head->next, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+			std::this_thread::yield();
+		}
+
+		if (old_head) {
+			return {std::move(old_head->value)};
+		} else {
+			return NULL_OPTIONAL;
+		}
+	}
+
+	Atomic<RefCountPtr<Node>> head = null;
+};
+#endif
