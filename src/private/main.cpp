@@ -81,7 +81,7 @@ auto main() -> int {
 			auto clone = tasks;
 			clone.erase(clone.begin() + i);
 
-			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, {}, clone);
+			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, {}, i == 0 ? Span<const SharedPtr<Task>>{} : Span<const SharedPtr<Task>>{{tasks[i - 1]}});
 		}
 #else
 		task::enqueue(tasks[0]);

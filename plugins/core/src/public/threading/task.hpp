@@ -23,8 +23,8 @@ enum class TaskState : u8 {
 
 struct Task {
 	struct Exclusive {
-		WeakPtr<Task> other;
-		SharedPtr<Mutex> mutex;
+		WeakPtr<Task> other;// The other task that runs exclusively against this task.
+		SharedPtr<Mutex> mutex;// The shared mutex for the two exclusive tasks (self and other).
 	};
 
 	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, MpscQueue<SharedPtr<Task>>&& subsequents = {})
@@ -67,6 +67,37 @@ struct Task {
 		subsequents.enqueue(std::move(other));
 
 		return true;
+	}
+
+	static auto add_exclusive(const SharedPtr<Task>& a, const SharedPtr<Task>& b) -> void {
+		ASSERT(a);
+		ASSERT(b);
+		ASSERT(!a->contains_exclusive(*b));
+		ASSERT(!b->contains_exclusive(*a));
+
+		a->exclusives.lock_exclusive()->for_each([&](const Exclusive& other) {
+			if (other.other.lock().get() == b.get()) {
+				fmt::println("{} contains {}", static_cast<void*>(a.get()), static_cast<void*>(other.other.lock().get()));
+			}
+		});
+
+		auto mutex = std::make_shared<Mutex>();
+
+		a->exclusives.lock_shared()->enqueue(Exclusive{
+			.other = b,
+			.mutex = mutex,
+		});
+
+		b->exclusives.lock_shared()->enqueue(Exclusive{
+			.other = a,
+			.mutex = std::move(mutex),
+		});
+	}
+
+	[[nodiscard]] auto contains_exclusive(const Task& other) const -> bool {
+		return const_cast<Task*>(this)->exclusives.lock_exclusive()->for_each_with_break([&](const Exclusive& exclusive) {
+			return exclusive.other.lock().get() == &other;
+		});
 	}
 
 	Fn<void(const SharedPtr<Task>&)> fn;
@@ -221,185 +252,6 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				break;
 			}
 
-#if 0
-			const auto acquire_all_required_locks = [&] {
-				const bool result = exclusives_access->for_each_with_break([&](const WeakPtr<Task>& weak_exclusive_task) {
-					if (const auto exclusive_task = weak_exclusive_task.lock()) {
-						if (auto result = UniqueLock<Mutex>::from_try_lock(exclusive_task->exclusive_execution_mutex)) {
-							execution_locks.emplace_back(std::move(*result));
-						} else {
-							return false;
-						}
-
-						if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(exclusive_task->subsequents_mutex)) {
-							subsequent_locks.emplace_back(std::move(*result));
-						} else {
-							return false;
-						}
-					}
-
-					return true;
-				});
-			};
-#endif
-
-#if 0
-			u32 num_retries = 0;
-			u32 num_currently_executing_exclusives = 0;
-
-			Array<UniqueLock<Mutex>> execution_locks;
-			Array<UniqueSharedLock<SharedMutex>> subsequent_locks;
-
-			while (true) {
-				UniqueLock lock{task->exclusive_execution_mutex};
-
-				using Node = MpscQueue<WeakPtr<Task>>::Node;
-				for (Node* node = exclusives_access->head.load(std::memory_order_relaxed); node; node = node->next) {
-					for (i32 i = static_cast<i32>(node->count.load(std::memory_order_relaxed)) - 1; i >= 0; --i) {
-
-						const auto exclusive = reinterpret_cast<WeakPtr<Task>*>(node->data)[i].lock();
-						if (!exclusive || exclusive->has_completed()) {
-							continue;
-						}
-
-						if (auto result = UniqueLock<Mutex>::from_try_lock(exclusive->exclusive_execution_mutex)) {
-							execution_locks.emplace_back(std::move(*result));
-						} else {
-							goto RETRY_OR_CONTINUE;
-						}
-
-						if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(exclusive->subsequents_mutex)) {
-							subsequent_locks.emplace_back(std::move(*result));
-						} else {
-							goto RETRY_OR_CONTINUE;
-						}
-
-						if (exclusive->state.load(std::memory_order_relaxed) == TaskState::EXECUTING) {
-							exclusive->subsequents.enqueue(task);
-							++num_currently_executing_exclusives;
-						}
-					}
-				}
-
-				task->state = TaskState::EXECUTING;
-				goto EXECUTE;
-
-				ASSERT_UNREACHABLE;
-
-			RETRY_OR_CONTINUE:
-				// Clear all locks.
-				execution_locks.clear();
-				subsequent_locks.clear();
-				lock.unlock();
-
-				if (num_currently_executing_exclusives == 0) {// Spin then retry.
-					// Exponential backoff and try again.
-					// @TODO: Should fallback to dequeueing tasks to not totally waste CPU-cycles.
-					static constexpr u32 MAX_RETRIES = 8;
-					if (num_retries++ < MAX_RETRIES) {
-						std::this_thread::yield();
-					} else {
-						const std::chrono::microseconds delay{1u << std::min(num_retries - MAX_RETRIES, MAX_RETRIES)};
-						std::this_thread::sleep_for(delay);
-					}
-				} else {
-					task->prerequisites_remaining += num_currently_executing_exclusives;
-					break;
-				}
-			}
-#elif 0
-
-			Array<UniqueLock<Mutex>> execution_locks;
-			Array<UniqueSharedLock<SharedMutex>> subsequent_locks;
-
-			UniqueLock lock{task->exclusive_execution_mutex};
-
-			u32 num_retries = 0;
-			while (exclusives_access->for_each_with_break([&](const WeakPtr<Task>& weak_exclusive_task) {
-				if (const auto exclusive_task = weak_exclusive_task.lock()) {
-					if (auto result = UniqueLock<Mutex>::from_try_lock(exclusive_task->exclusive_execution_mutex)) {
-						execution_locks.emplace_back(std::move(*result));
-					} else {
-						return false;
-					}
-
-					if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(exclusive_task->subsequents_mutex)) {
-						subsequent_locks.emplace_back(std::move(*result));
-					} else {
-						return false;
-					}
-				}
-
-				return true;
-			})) {
-				// Clear all locks.
-				lock.unlock();
-				execution_locks.clear();
-				subsequent_locks.clear();
-
-				// Exponential backoff and try again.
-				// @TODO: Should fallback to dequeueing tasks to not totally waste CPU-cycles.
-				static constexpr u32 MAX_RETRIES = 8;
-				if (num_retries++ < MAX_RETRIES) {
-					std::this_thread::yield();
-				} else {
-					const std::chrono::microseconds delay{1u << std::min(num_retries - MAX_RETRIES, MAX_RETRIES)};
-					std::this_thread::sleep_for(delay);
-				}
-			}
-
-			u32 num_currently_executing_exclusive_tasks = 0;
-			exclusives_access->for_each([&](const WeakPtr<Task>& weak_exclusive_task) {
-				const auto exclusive_task = weak_exclusive_task.lock();
-				if (exclusive_task && exclusive_task->state.load(std::memory_order_relaxed) == TaskState::EXECUTING) {
-					++num_currently_executing_exclusive_tasks;
-					exclusive_task->subsequents.enqueue(task);
-				}
-			});
-
-			if (num_currently_executing_exclusive_tasks == 0) {
-				task->state = TaskState::EXECUTING;
-				break;
-			} else {
-				task->prerequisites_remaining += num_currently_executing_exclusive_tasks;
-			}
-
-#elif 0
-			Array<UniqueLock<Mutex>> execution_locks;
-			Array<UniqueSharedLock<SharedMutex>> subsequent_locks;
-			u32 num_retries = 0;
-			while (exclusives_access->for_each_with_break([&](const WeakPtr<Task>& weak_exclusive_task) {
-				if (const auto exclusive_task = weak_exclusive_task.lock()) {
-					if (auto result = UniqueLock<Mutex>::from_try_lock(exclusive_task->exclusive_execution_mutex)) {
-						execution_locks.emplace_back(std::move(*result));
-					} else {
-						return false;
-					}
-
-					if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(exclusive_task->subsequents_mutex)) {
-						subsequent_locks.emplace_back(std::move(*result));
-					} else {
-						return false;
-					}
-				}
-
-				return true;
-			})) {
-				// Clear all locks.
-				execution_locks.clear();
-				subsequent_locks.clear();
-
-				// Exponential backoff and try again.
-				// @TODO: Should fallback to dequeueing tasks to not totally waste CPU-cycles.
-				static constexpr u32 MAX_RETRIES = 8;
-				if (num_retries++ < MAX_RETRIES) {
-					std::this_thread::yield();
-				} else {
-					const std::chrono::microseconds delay{1u << std::min(num_retries - MAX_RETRIES, MAX_RETRIES)};
-					std::this_thread::sleep_for(delay);
-				}
-			}
-#else
 			Array<Task::Exclusive> exclusives;
 			exclusives_access->for_each([&](const Task::Exclusive& exclusive) {
 				if (auto exclusive_task = exclusive.other.lock()) {
@@ -439,11 +291,12 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				subsequent_locks.clear();
 
 				// Exponential backoff. Required for decent performance in highly contentious situations.
+				// @TODO: Should fallback to busy waiting after a duration.
 				static constexpr u32 MAX_RETRIES = 8;
 				if (num_retries++ < MAX_RETRIES) {
 					std::this_thread::yield();
 				} else {
-					const std::chrono::microseconds delay{1 << std::min(num_retries - MAX_RETRIES, 10u)};
+					const std::chrono::microseconds delay{1 << std::min(num_retries - MAX_RETRIES, 4u)};
 					std::this_thread::sleep_for(delay);
 				}
 			}
@@ -452,7 +305,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 			for (const Task::Exclusive& exclusive : exclusives) {
 				const auto exclusive_task = exclusive.other.lock();
 				if (exclusive_task && exclusive_task->state.load(std::memory_order_relaxed) == TaskState::EXECUTING) {
-					exclusive_task->subsequents.enqueue(task);
+					exclusive_task->subsequents.enqueue(task);// @NOTE: Could potentially decrease this task's priority.
 					++num_exclusives_executing;
 				}
 			}
@@ -466,9 +319,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				task->enqueued = false;
 #endif
 			}
-#endif
 		}
-	EXECUTE:
 
 		// Execute the task.
 		task->fn(task);
@@ -592,6 +443,8 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 		for (const auto& exclusive : exclusives) {
 			ASSERT(exclusive);
 
+			Task::add_exclusive(task, exclusive);
+#if 0
 #if 0
 			exclusive->exclusives.lock_shared()->enqueue(task);
 			task->exclusives.get_unsafe().enqueue(exclusive);// Shouldn't be enqueued so should be safe to not lock.
@@ -607,6 +460,7 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 				.other = task,
 				.mutex = std::move(mutex),
 			});
+#endif
 #endif
 		}
 	}

@@ -585,14 +585,15 @@ struct SharedLock {
 	constexpr explicit SharedLock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
-	[[nodiscard]] constexpr auto lock_exclusive() {
+	template <typename Self>
+	[[nodiscard]] constexpr auto lock_exclusive(this Self&& self) {
 		using UniqueAccess = UniqueAccess<
-			SharedLock,
-			decltype([](SharedLock& self) -> T& { return self.value; }),
-			decltype([](SharedLock& self) { self.mutex.lock(); }),
-			decltype([](SharedLock& self) { self.mutex.unlock(); })
+			std::remove_reference_t<Self>,
+			decltype([](Self& self) -> auto& { return self.value; }),
+			decltype([](Self& self) { self.mutex.lock(); }),
+			decltype([](Self& self) { self.mutex.unlock(); })
 		>;
-		return UniqueAccess{*this};
+		return UniqueAccess{self};
 	}
 
 	template <typename Self>
