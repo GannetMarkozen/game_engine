@@ -102,6 +102,19 @@ concept SharedMutex = requires(T t) {
 };
 }
 
+namespace thread {
+template <std::integral T, T MAX_RETRIES = 8, T MAX_YIELD_EXPONENT = 8>
+NOINLINE inline auto exponential_yield(T& retries) -> void {
+	if (retries < MAX_RETRIES) {
+		std::this_thread::yield();
+	} else {
+		const std::chrono::microseconds delay{1u << std::min(retries - MAX_RETRIES, MAX_YIELD_EXPONENT)};
+		std::this_thread::sleep_for(delay);
+	}
+	++retries;
+}
+}
+
 struct SpinLock {
 	[[nodiscard]] FORCEINLINE constexpr SpinLock() = default;
 	NON_COPYABLE(SpinLock);
@@ -274,12 +287,14 @@ struct UniqueLock {
 
 	FORCEINLINE auto operator=(UniqueLock&& other) noexcept -> UniqueLock& {
 		if (this == &other) [[unlikely]] {
-			return;
+			return *this;
 		}
 		unlock();
 
 		mutex = other.mutex;
 		other.mutex = null;
+
+		return *this;
 	}
 
 	FORCEINLINE ~UniqueLock() {
@@ -355,12 +370,14 @@ struct UniqueExclusiveLock {
 
 	FORCEINLINE auto operator=(UniqueExclusiveLock&& other) noexcept -> UniqueExclusiveLock& {
 		if (this == &other) [[unlikely]] {
-			return;
+			return *this;
 		}
 		unlock();
 
 		mutex = other.mutex;
 		other.mutex = null;
+
+		return *this;
 	}
 
 	FORCEINLINE ~UniqueExclusiveLock() {
@@ -556,18 +573,27 @@ struct Lock {
 	constexpr Lock() = default;
 
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	constexpr explicit Lock(Args&&... args)
+	constexpr Lock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	template <typename Self>
 	[[nodiscard]] constexpr auto lock(this Self&& self) {
 		using UniqueAccess = UniqueAccess<
 			std::remove_reference_t<Self>,
-			decltype([](Self& self) -> auto& { self.value; }),
+			decltype([](Self& self) -> auto& { return self.value; }),
 			decltype([](Self& self) { self.mutex.lock(); }),
 			decltype([](Self& self) { self.mutex.unlock(); })
 		>;
 		return UniqueAccess{self};
+	}
+
+	// Retrieves the value without locking. Unsafe!
+	[[nodiscard]] constexpr auto get_unsafe(this auto&& self) -> auto& {
+		return self.value;
+	}
+
+	[[nodiscard]] constexpr auto get_mutex() const -> MutexType& {
+		return mutex;
 	}
 
 private:
@@ -582,7 +608,7 @@ struct SharedLock {
 	constexpr SharedLock() = default;
 
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	constexpr explicit SharedLock(Args&&... args)
+	constexpr SharedLock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	template <typename Self>
@@ -612,6 +638,10 @@ struct SharedLock {
 		return self.value;
 	}
 
+	[[nodiscard]] constexpr auto get_mutex() const -> SharedMutexType& {
+		return mutex;
+	}
+
 private:
 	T value;
 	mutable SharedMutexType mutex;
@@ -624,7 +654,7 @@ struct RwLock {
 	constexpr RwLock() = default;
 
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	constexpr explicit RwLock(Args&&... args)
+	constexpr RwLock(Args&&... args)
 		: value{std::forward<Args>(args)...} {}
 
 	// Acquires exclusive write-access.
@@ -647,6 +677,15 @@ struct RwLock {
 			decltype([](const RwLock& self) { self.mutex.unlock_shared(); })
 		>;
 		return UniqueAccess{*this};
+	}
+
+	// Retrieves the value without locking. Unsafe!
+	[[nodiscard]] constexpr auto get_unsafe(this auto&& self) -> auto& {
+		return self.value;
+	}
+
+	[[nodiscard]] constexpr auto get_mutex() const -> SharedMutexType& {
+		return mutex;
 	}
 
 private:
@@ -743,7 +782,7 @@ struct MpscList {
 
 	// Thread-safe.
 	template <typename... Args> requires std::constructible_from<T, Args&&...>
-	[[nodiscard]] constexpr auto find_or_enqueue(cpts::InvokableReturns<bool, const T&> auto&& predicate, Args&&... args) -> AtomicFindOrEnqueueResult<const T> {
+	[[nodiscard]] constexpr auto find_or_enqueue(cpts::InvokableReturns<bool, const T&> auto&& predicate, Args&&... args) -> AtomicFindOrEnqueueResult<T> {
 		Node* old_head = head.load(std::memory_order_relaxed);
 
 		// First check if any current nodes have this value.
@@ -977,15 +1016,26 @@ struct MpscQueue {
 // A closeable multi producer single consumer set.
 template <typename T, usize N = 32, typename Hasher = std::hash<T>, typename EqualOp = std::equal_to<T>>
 struct MpscSet {
-	[[nodiscard]] constexpr auto find_or_enqueue(T value) -> AtomicFindOrEnqueueResult<const T> {
+	[[nodiscard]] constexpr auto find_or_enqueue(T value) -> AtomicFindOrEnqueueResult<T> {
 		return slots[Hasher{}(value) % N].find_or_enqueue([&](const T& other) { return EqualOp{}(value, other); }, std::move(value));
 	}
 
-	[[nodiscard]] constexpr auto find_or_add(T value) -> const T& {
+	constexpr auto enqueue_unique(T value) -> bool {
+		return find_or_enqueue(std::move(value)).result == AtomicAcquisitionResult::ENQUEUED;
+	}
+
+	constexpr auto enqueue(T value) -> const T& {
+		const usize index = Hasher{}(value) % N;
+		ASSERT(!slots[index].find([&](const T& other) { return EqualOp{}(value, other); }));
+
+		return slots[index].enqueue(std::move(value));
+	}
+
+	[[nodiscard]] constexpr auto find_or_add(T value) -> T& {
 		return find_or_enqueue(std::move(value)).value;
 	}
 
-	[[nodiscard]] constexpr auto find(const T& value) -> const T* {
+	[[nodiscard]] constexpr auto find(const T& value) -> T* {
 		return slots[Hasher{}(value) % N].find([&](const T& other) { return EqualOp{}(value, other); });
 	}
 
@@ -1003,6 +1053,29 @@ struct MpscSet {
 		}
 	}
 
+	// NOT thread-safe.
+	constexpr auto for_each_with_break(cpts::InvokableReturns<bool, T&> auto&& fn) -> bool {
+		for (usize i = 0; i < N; ++i) {
+			using Node = MpscList<T>::Node;
+			for (Node* node = slots[i].head.load(std::memory_order_relaxed); node; node = node->next) {
+				if (!std::invoke(FORWARD_AUTO(fn), node->value)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	// NOT thread-safe.
+	[[nodiscard]] constexpr auto is_empty() const -> bool {
+		for (usize i = 0; i < N; ++i) {
+			if (!!slots[i].head.load(std::memory_order_relaxed)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	MpscList<T> slots[N];
 };
 
@@ -1016,17 +1089,21 @@ struct MpscMap {
 		T value;
 	};
 
-	[[nodiscard]] constexpr auto find_or_enqueue(Key key) -> AtomicFindOrEnqueueResult<const T> {
+	[[nodiscard]] constexpr auto find_or_enqueue(Key key) -> AtomicFindOrEnqueueResult<T> {
 		const usize index = Hasher{}(key) % N;
 
-		return slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key)).value;
+		const AtomicFindOrEnqueueResult<KeyValue> result = slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key));
+		return AtomicFindOrEnqueueResult<T>{
+			.value = result.value.value,
+			.result = result.result,
+		};
 	}
 
-	[[nodiscard]] constexpr auto find_or_add(Key key) -> const T& {
+	[[nodiscard]] constexpr auto find_or_add(Key key) -> T& {
 		return find_or_enqueue(std::move(key)).value;
 	}
 
-	[[nodiscard]] constexpr auto find(const Key& key) -> const T* {
+	[[nodiscard]] constexpr auto find(const Key& key) -> T* {
 		const usize index = Hasher{}(key) % N;
 		KeyValue* found = slots[index].find([&](const KeyValue& other) { return EqualOp{}(key, other.key); });
 		return found ? &found->value : null;

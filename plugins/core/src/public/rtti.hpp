@@ -3,6 +3,7 @@
 #include "static_reflection.hpp"
 #include "serialization.hpp"
 #include "memory.hpp"
+#include "math.hpp"
 
 #include <concepts>
 #include <thread>
@@ -13,93 +14,6 @@ struct TypeInfo;
 template <typename>
 auto get_type_info() -> const TypeInfo&;
 }
-
-// @TODO: Implement small buffer optimizations or allocators.
-struct Any {
-	FORCEINLINE constexpr Any()
-		: data{null}, type_info{null} {}
-
-	FORCEINLINE constexpr explicit Any(NoInit) {}
-
-	FORCEINLINE Any(const Any& other);
-	FORCEINLINE Any(Any&& other) noexcept;
-
-	FORCEINLINE auto operator=(const Any& other) -> Any&;
-	FORCEINLINE auto operator=(Any&& other) noexcept -> Any&;
-
-	template <typename T>
-	FORCEINLINE explicit Any(T&& value);
-
-	FORCEINLINE ~Any();
-
-	FORCEINLINE auto reset() -> bool;
-
-	template <typename T, typename... Args> requires std::constructible_from<T, Args&&...>
-	FORCEINLINE auto emplace(Args&&... args) -> T& {
-		reset();
-
-		data = new T{std::forward<Args>(args)...};
-		type_info = &rtti::get_type_info<T>();
-
-		return *static_cast<T*>(data);
-	}
-
-	[[nodiscard]] FORCEINLINE auto get_data() -> void* {
-		return data;
-	}
-
-	[[nodiscard]] FORCEINLINE auto get_data() const -> const void* {
-		return data;
-	}
-
-	[[nodiscard]] FORCEINLINE auto get_type() const -> const rtti::TypeInfo* {
-		return type_info;
-	}
-
-	[[nodiscard]] FORCEINLINE auto has_value() const -> bool {
-		return !!type_info;
-	}
-
-	[[nodiscard]] FORCEINLINE auto is(const rtti::TypeInfo& other) const -> bool {
-		return type_info == &other;
-	}
-
-	// @TODO: Optimize cache-misses for this.
-	[[nodiscard]] FORCEINLINE auto is_child_of(const rtti::TypeInfo& other) const -> bool;
-
-	template <typename T>
-	[[nodiscard]] FORCEINLINE auto is() const -> bool {
-		return is(rtti::get_type_info<T>());
-	}
-
-	template <typename T>
-	[[nodiscard]] FORCEINLINE auto is_child_of() const -> bool {
-		return is_child_of(rtti::get_type_info<T>());
-	}
-
-	template <typename T, typename Self>
-	[[nodiscard]] FORCEINLINE auto as(this Self&& self) -> decltype(auto);
-
-	template <typename T, bool INCLUDE_SUPER = true>
-	[[nodiscard]] FORCEINLINE auto try_as() -> T* {
-		return [&] {
-			if constexpr (INCLUDE_SUPER) {
-				return is_child_of<T>();
-			} else {
-				return is<T>();
-			}
-		}() ? static_cast<T*>(data) : null;
-	}
-
-	template <typename T, bool INCLUDE_SUPER = true>
-	[[nodiscard]] FORCEINLINE auto try_as() const -> const T* {
-		return const_cast<Any*>(this)->try_as<T, INCLUDE_SUPER>();
-	}
-
-private:
-	void* data;
-	const rtti::TypeInfo* type_info;
-};
 
 namespace rtti {
 enum class Flags : u8 {
@@ -122,12 +36,11 @@ enum class Type : u8 {
 };
 
 struct Attribute {
-	StringView name;
-	//Any value;
+	String name;
 };
 
 struct Member {
-	StringView name;
+	String name;
 	usize offset;
 	const TypeInfo& type;
 	Array<Attribute> attributes;
@@ -277,7 +190,7 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 		}
 	},
 	.equals = [](const void* a, const void* b) -> bool {
-#if 0
+#if 01
 		if constexpr (std::equality_comparable<T>) {
 			return *static_cast<const T*>(a) == *static_cast<const T*>(b);
 		} else {
@@ -347,6 +260,106 @@ template <typename T>
 }
 }
 
+#if 0
+// @TODO: Implement small buffer optimizations or allocators.
+struct Any {
+	FORCEINLINE constexpr Any()
+		: data{null}, type_info{null} {}
+
+	FORCEINLINE constexpr explicit Any(NoInit) {}
+
+	FORCEINLINE Any(const Any& other);
+	FORCEINLINE Any(Any&& other) noexcept;
+
+	FORCEINLINE auto operator=(const Any& other) -> Any&;
+	FORCEINLINE auto operator=(Any&& other) noexcept -> Any&;
+
+	template <typename T>
+	FORCEINLINE explicit Any(T&& value);
+
+	FORCEINLINE ~Any();
+
+	template <typename T, typename... Args> requires std::constructible_from<T, Args&&...>
+	[[nodiscard]] FORCEINLINE static auto make(Args&&... args) -> Any {
+		Any out;
+		out.emplace<T>(std::forward<Args>(args)...);
+		return out;
+	}
+
+	[[nodiscard]] FORCEINLINE auto operator==(const Any& other) const -> bool;
+
+	FORCEINLINE auto reset() -> bool;
+
+	template <typename T, typename... Args> requires std::constructible_from<T, Args&&...>
+	FORCEINLINE auto emplace(Args&&... args) -> T& {
+		reset();
+
+		data = new T{std::forward<Args>(args)...};
+		type_info = &rtti::get_type_info<T>();
+
+		return *static_cast<T*>(data);
+	}
+
+	[[nodiscard]] FORCEINLINE auto get_data() -> void* {
+		return data;
+	}
+
+	[[nodiscard]] FORCEINLINE auto get_data() const -> const void* {
+		return data;
+	}
+
+	[[nodiscard]] FORCEINLINE auto get_type() const -> const rtti::TypeInfo* {
+		return type_info;
+	}
+
+	[[nodiscard]] FORCEINLINE auto has_value() const -> bool {
+		return !!type_info;
+	}
+
+	[[nodiscard]] FORCEINLINE auto is(const rtti::TypeInfo& other) const -> bool {
+		return type_info == &other;
+	}
+
+	// @TODO: Optimize cache-misses for this.
+	[[nodiscard]] FORCEINLINE auto is_child_of(const rtti::TypeInfo& other) const -> bool;
+
+	template <typename T>
+	[[nodiscard]] FORCEINLINE auto is() const -> bool {
+		return is(rtti::get_type_info<T>());
+	}
+
+	template <typename T>
+	[[nodiscard]] FORCEINLINE auto is_child_of() const -> bool {
+		return is_child_of(rtti::get_type_info<T>());
+	}
+
+	template <typename T, typename Self>
+	[[nodiscard]] FORCEINLINE auto as(this Self&& self) -> decltype(auto);
+
+	template <typename T, bool INCLUDE_SUPER = true>
+	[[nodiscard]] FORCEINLINE auto try_as() -> T* {
+		return [&] {
+			if constexpr (INCLUDE_SUPER) {
+				return is_child_of<T>();
+			} else {
+				return is<T>();
+			}
+		}() ? static_cast<T*>(data) : null;
+	}
+
+	template <typename T, bool INCLUDE_SUPER = true>
+	[[nodiscard]] FORCEINLINE auto try_as() const -> const T* {
+		return const_cast<Any*>(this)->try_as<T, INCLUDE_SUPER>();
+	}
+
+	[[nodiscard]] FORCEINLINE auto hash() const -> usize;
+
+private:
+	void* data;
+	const rtti::TypeInfo* type_info;
+};
+
+
 FORCEINLINE Any::Any(const Any& other) {
 	if (!!(type_info == other.type_info)) {
 		data = mem::alloc(type_info->size, type_info->alloc_alignment);
@@ -378,8 +391,8 @@ FORCEINLINE Any::Any(T&& value) {
 
 FORCEINLINE Any::~Any() {
 	if (type_info) {
+		ASSERT(data);
 		type_info->destruct(data, 1);
-		fmt::println("Deallocing {}", type_info->name);
 		mem::dealloc(data, type_info->alloc_alignment);
 	}
 }
@@ -401,6 +414,10 @@ FORCEINLINE auto Any::operator=(Any&& other) noexcept -> Any& {
 	other.type_info = null;
 
 	return *this;
+}
+
+[[nodiscard]] FORCEINLINE auto Any::operator==(const Any& other) const -> bool {
+	return (type_info == other.type_info) && (!type_info || type_info->equals(data, other.data));
 }
 
 FORCEINLINE auto Any::reset() -> bool {
@@ -436,3 +453,175 @@ template <typename T, typename Self>
 	ASSERTF(self.template is_child_of<T>(), "Attempted to cast {} to {}!", self.type_info ? self.type_info->name : "NULL", utils::get_type_name<T>());
 	return (std::forward_like<Self>(*(T*)self.data));
 }
+
+[[nodiscard]] FORCEINLINE auto Any::hash() const -> usize {
+	const auto type_info_hash = std::hash<const rtti::TypeInfo*>{}(type_info);
+	if (has_value() && !!(type_info->flags & rtti::Flags::HASHABLE)) {
+		return math::hash_combine(type_info_hash, type_info->hash(data));
+	} else {
+		return type_info_hash;
+	}
+}
+
+template <>
+struct std::hash<Any> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const Any& value) const -> usize {
+		return value.hash();
+	}
+};
+#endif
+
+struct Any {
+	constexpr Any()
+		: data{null}, type_info{null} {}
+
+	Any(const Any& other) {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+
+		if (!other.has_value()) {
+			data = null;
+			type_info = null;
+			return;
+		}
+
+		type_info = other.type_info;
+		data = mem::alloc(type_info->size, type_info->alloc_alignment);
+		type_info->copy_construct(data, other.data, 1);
+	}
+
+	constexpr Any(Any&& other) noexcept {
+		if (this == &other) [[unlikely]] {
+			return;
+		}
+
+		data = other.data;
+		type_info = other.type_info;
+
+		other.data = null;
+		other.type_info = null;
+	}
+
+	auto operator=(const Any& other) -> Any& {
+		if (this == &other) [[unlikely]] {
+			return *this;
+		}
+
+		if (type_info == other.type_info) {
+			if (has_value()) {
+				ASSERT(other.has_value());
+
+				type_info->copy_assign(data, other.data, 1);
+			} else {
+				reset();
+			}
+		} else {
+			reset();
+
+			if (other.has_value()) {
+				type_info = other.type_info;
+				data = mem::alloc(type_info->size, type_info->alloc_alignment);
+				type_info->copy_construct(data, other.data, 1);
+			}
+		}
+
+		return *this;
+	}
+
+	constexpr auto operator=(Any&& other) noexcept -> Any& {
+		if (this == &other) [[unlikely]] {
+			return *this;
+		}
+
+		reset();
+
+		data = other.data;
+		type_info = other.type_info;
+
+		other.data = null;
+		other.type_info = null;
+
+		return *this;
+	}
+
+	~Any() {
+		reset();
+	}
+
+	template <typename T, typename... Args> requires std::constructible_from<T, Args&&...>
+	[[nodiscard]] static auto make(Args&&... args) -> Any {
+		Any out;
+		out.emplace<T>(std::forward<Args>(args)...);
+		return out;
+	}
+
+	auto reset() -> bool {
+		if (type_info) {
+			ASSERT(data);
+
+			type_info->destruct(data, 1);
+			mem::dealloc(data, type_info->alloc_alignment);
+
+			data = null;
+			type_info = null;
+
+			return true;
+		} else {
+			ASSERT(!data);
+			return false;
+		}
+	}
+
+	template <typename T, typename... Args> requires std::constructible_from<T, Args&&...>
+	auto emplace(Args&&... args) -> T& {
+		reset();
+
+		data = new T{std::forward<Args>(args)...};
+		type_info = &rtti::get_type_info<T>();
+
+		return *static_cast<T*>(data);
+	}
+
+	[[nodiscard]] constexpr auto has_value() const -> bool {
+		return !!type_info;
+	}
+
+	[[nodiscard]] constexpr auto is(const rtti::TypeInfo& other) const -> bool {
+		return type_info == &other;
+	}
+
+	template <typename T>
+	[[nodiscard]] constexpr auto is() const -> bool {
+		return is(rtti::get_type_info<T>());
+	}
+
+	[[nodiscard]] constexpr auto is_child_of(const rtti::TypeInfo& other) const -> bool {
+		for (const rtti::TypeInfo* current = type_info; current; current = current->parent) {
+			if (current == &other) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	template <typename T>
+	[[nodiscard]] constexpr auto is_child_of() const -> bool {
+		return is_child_of(rtti::get_type_info<T>());
+	}
+
+	template <typename Self, typename T>
+	[[nodiscard]] constexpr auto as(this Self&& self) -> decltype(auto) {
+		ASSERTF(self.type_info, "Can not cast NULL to {}!", utils::get_type_name<T>());
+		ASSERTF(self.is_child_of(rtti::get_type_info<T>()), "Can not cast {} to {}!", self.type_info->name, utils::get_type_name<T>());
+		return (std::forward_like<Self>(*static_cast<T*>(self.data)));
+	}
+
+	[[nodiscard]] constexpr auto get_data() -> void* { return data; }
+	[[nodiscard]] constexpr auto get_data() const -> const void* { return data; }
+	[[nodiscard]] constexpr auto get_type() const -> const rtti::TypeInfo* { return type_info; }
+
+private:
+	void* data;
+	const rtti::TypeInfo* type_info;
+};

@@ -3,22 +3,29 @@
 #include "core_include.hpp"
 #include "thread_safe_types.hpp"
 #include <algorithm>
+#include <mutex>
 #include <thread>
 #include <condition_variable>
 
 // @TODO: Create custom allocator for SharedPtr Tasks.
 
-namespace task {
 enum class Priority : u8 {
-	HIGH, NORMAL, LOW, COUNT
+	HIGH,
+	NORMAL,
+	LOW,
+	COUNT
 };
 
 enum class Thread : u8 {
-	MAIN, ANY, COUNT
+	MAIN,// Only runs on the main thread.
+	ANY,// Run on any thread (main / workers).
+	COUNT
 };
 
 enum class TaskState : u8 {
-	STANDBY, WAITING, EXECUTING, COMPLETE
+	STANDBY,// Awaiting execution.
+	EXECUTING,// Currently executing.
+	COMPLETE,// Finished execution.
 };
 
 struct Task {
@@ -26,6 +33,25 @@ struct Task {
 		WeakPtr<Task> other;// The other task that runs exclusively against this task.
 		SharedPtr<Mutex> mutex;// The shared mutex for the two exclusive tasks (self and other).
 	};
+
+	using ExclusiveHash = decltype([](const Exclusive& value) -> usize {
+		struct Accessor : public WeakPtr<Task> {
+			[[nodiscard]] static constexpr auto hash(const WeakPtr<Task>& value) -> usize {
+				return std::hash<const Task*>{}(static_cast<const Accessor&>(value).get());
+			}
+		};
+		return Accessor::hash(value.other);
+	});
+
+	using ExclusiveEqual = decltype([](const Exclusive& a, const Exclusive& b) -> bool {
+		struct Accessor : public WeakPtr<Task> {
+			[[nodiscard]] static constexpr auto equals(const WeakPtr<Task>& a, const WeakPtr<Task>& b) -> bool {
+				return static_cast<const Accessor&>(a).get() == static_cast<const Accessor&>(b).get();
+			}
+		};
+		return Accessor::equals(a.other, b.other);
+	});
+
 
 	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, MpscQueue<SharedPtr<Task>>&& subsequents = {})
 		: fn{std::move(fn)}, priority{priority}, subsequents{std::move(subsequents)}, thread{thread} {}
@@ -50,12 +76,20 @@ struct Task {
 		return prerequisites_remaining.load(std::memory_order_relaxed) > 0;
 	}
 
+#if 0
 	// @NOTE: Not entirely thread-safe! Must guarantee that that the other task is not being executed during this!
 	auto add_subsequent(SharedPtr<Task> other) -> bool {
 		ASSERT(other);
+
+		if (other->has_completed()) {
+			return false;
+		}
+
+#if 0
 		ASSERT(!other->has_completed());
 		ASSERTF(!other->enqueued || other->has_prerequisites(), "Can not add subsequent to a task that has the potential to be enqueued! other->enqueued == {}. other->has_prerequisites() == {}",
 			other->enqueued, other->has_prerequisites());
+#endif
 
 		ScopeSharedLock _{subsequents_mutex};
 
@@ -68,18 +102,165 @@ struct Task {
 
 		return true;
 	}
+#endif
+
+	enum class AddSubsequentResult : u8 {
+		SUCCESS,
+		SUBSEQUENT_ALREADY_EXECUTING,
+		SUBSEQUENT_ALREADY_COMPLETED,
+		PREREQUISITE_ALREADY_COMPLETED,
+	};
+
+	auto add_subsequent_assumes_locked(SharedPtr<Task> other) -> AddSubsequentResult {
+		switch (other->state.load(std::memory_order_relaxed)) {
+		case TaskState::EXECUTING: return AddSubsequentResult::SUBSEQUENT_ALREADY_EXECUTING;
+		case TaskState::COMPLETE: return AddSubsequentResult::SUBSEQUENT_ALREADY_COMPLETED;
+		default:
+		}
+
+		if (has_completed()) {
+			return AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED;
+		}
+
+#if 0
+		ASSERTF(!other->subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
+			return subsequent.get() == this;
+		}), "Attempted to enqueue subsequent task that also has that task as a subsequent! Circular subsequent dependencies!");
+#endif
+
+		++other->prerequisites_remaining;
+		subsequents.enqueue(std::move(other));
+
+		return AddSubsequentResult::SUCCESS;
+	}
+
+	auto add_subsequent(SharedPtr<Task> other) -> AddSubsequentResult {
+		ASSERT(other);
+
+		// Acquire all locks. Ensure no deadlocking.
+		// @TODO: Should make an equivelent to std::scoped_lock that accepts lock_shared so I don't have to do this.
+		UniqueSharedLock<SharedMutex> l1{null}, l2{null}, l3{null};
+
+		u32 retries = 0;
+		while (true) {
+			ASSERTF(retries < 1024, "Reached maximum number of retries!");
+
+			l1 = UniqueSharedLock{subsequents_mutex};
+
+			if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(other->subsequents_mutex)) {
+				l2 = std::move(*result);
+			} else {
+				l1.unlock();
+
+				thread::exponential_yield(retries);
+				continue;
+			}
+
+			if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(other->exclusives.get_mutex())) {
+				l3 = std::move(*result);
+			} else {
+				l1.unlock();
+				l2.unlock();
+
+				thread::exponential_yield(retries);
+				continue;
+			}
+
+			break;
+		}
+
+		switch (other->state.load(std::memory_order_relaxed)) {
+		case TaskState::EXECUTING: return AddSubsequentResult::SUBSEQUENT_ALREADY_EXECUTING;
+		case TaskState::COMPLETE: return AddSubsequentResult::SUBSEQUENT_ALREADY_COMPLETED;
+		default:
+		}
+
+		if (has_completed()) {
+			return AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED;
+		}
+
+		ASSERTF(!subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
+			return subsequent == other;
+		}), "Attempted to enqueue a subsequent that is already a subsequent of this task!");
+
+		ASSERTF(!other->subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
+			return subsequent.get() == this;
+		}), "Attempted to enqueue subsequent task that also has that task as a subsequent! Circular subsequent dependencies!");
+
+		++other->prerequisites_remaining;
+		subsequents.enqueue(std::move(other));
+
+		return AddSubsequentResult::SUCCESS;
+	}
+
+	enum class TryAddSubsequentElsePrerequisiteResult : u8 {
+		ADDED_SUBSEQUENT,
+		ADDED_PREREQUISITE,
+		FAIL,
+	};
+
+	static auto try_add_subsequent_else_add_prerequisite(const SharedPtr<Task>& try_prerequisite, const SharedPtr<Task>& try_subsequent) -> TryAddSubsequentElsePrerequisiteResult {
+		// Acquire all locks. Ensure no deadlocking.
+		// @TODO: Should make an equivelent to std::scoped_lock that accepts lock_shared so I don't have to do this.
+		UniqueSharedLock<SharedMutex> l1{null}, l2{null}, l3{null}, l4{null};
+
+		u32 retries = 0;
+		while (true) {
+			ASSERTF(retries < 1024, "Reached maximum number of retries!");
+
+			l1 = UniqueSharedLock{try_prerequisite->subsequents_mutex};
+
+			if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(try_prerequisite->exclusives.get_mutex())) {
+				l2 = std::move(*result);
+			} else {
+				l1.unlock();
+
+				thread::exponential_yield(retries);
+				continue;
+			}
+
+			if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(try_subsequent->subsequents_mutex)) {
+				l3 = std::move(*result);
+			} else {
+				l1.unlock();
+				l2.unlock();
+
+				thread::exponential_yield(retries);
+				continue;
+			}
+
+			if (auto result = UniqueSharedLock<SharedMutex>::from_try_lock(try_subsequent->exclusives.get_mutex())) {
+				l4 = std::move(*result);
+			} else {
+				l1.unlock();
+				l2.unlock();
+				l3.unlock();
+
+				thread::exponential_yield(retries);
+				continue;
+			}
+
+			break;
+		}
+
+		const auto subsequent_result = try_prerequisite->add_subsequent_assumes_locked(try_subsequent);
+		if (subsequent_result != AddSubsequentResult::SUCCESS) {
+			const auto prerequisite_result = try_subsequent->add_subsequent_assumes_locked(try_prerequisite);
+			if (prerequisite_result == AddSubsequentResult::SUCCESS) {
+				return TryAddSubsequentElsePrerequisiteResult::ADDED_PREREQUISITE;
+			} else {
+				return TryAddSubsequentElsePrerequisiteResult::FAIL;
+			}
+		} else {
+			return TryAddSubsequentElsePrerequisiteResult::ADDED_SUBSEQUENT;
+		}
+	}
 
 	static auto add_exclusive(const SharedPtr<Task>& a, const SharedPtr<Task>& b) -> void {
 		ASSERT(a);
 		ASSERT(b);
 		ASSERT(!a->contains_exclusive(*b));
 		ASSERT(!b->contains_exclusive(*a));
-
-		a->exclusives.lock_exclusive()->for_each([&](const Exclusive& other) {
-			if (other.other.lock().get() == b.get()) {
-				fmt::println("{} contains {}", static_cast<void*>(a.get()), static_cast<void*>(other.other.lock().get()));
-			}
-		});
 
 		auto mutex = std::make_shared<Mutex>();
 
@@ -114,6 +295,7 @@ struct Task {
 #endif
 };
 
+namespace task {
 struct alignas(CACHE_LINE_SIZE) ThreadCondition {
 	std::condition_variable_any condition;
 	SharedMutex mutex;
@@ -222,6 +404,8 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 		u64 count = 0;
 		while (true) {
 			while (!(task = try_dequeue_task<IS_IN_MAIN_THREAD>())) [[unlikely]] {
+				// @TODO: Spin for a bit before going to sleep.
+
 				auto& thread_condition = impl::get_this_thread_condition();
 
 				UniqueExclusiveLock lock{thread_condition.mutex};
@@ -243,13 +427,35 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				thread_condition.condition.wait(lock, [&] { return !thread_condition.is_asleep; });
 			}
 
+			#if 1
+			ScopeExclusiveLock _{task->subsequents_mutex};
 			auto exclusives_access = task->exclusives.lock_exclusive();
-			ASSERT(!task->has_completed());
+
+			// Prerequisites were added after enqueueing. Do not execute, will be enqueued at a later time.
+			if (task->has_prerequisites()) [[unlikely]] {
+#if ASSERTIONS_ENABLED
+				task->enqueued = false;
+#endif
+				continue;
+			}
+			#endif
+
+#if 0
+			ASSERTF(task->state.load(std::memory_order_relaxed) == TaskState::STANDBY, "State == {}! Enqueued == {}!",
+				[&] {
+					switch (task->state.load(std::memory_order_relaxed)) {
+					case TaskState::STANDBY: return "TaskState::STANDBY";
+					case TaskState::EXECUTING: return "TaskState::EXECUTING";
+					case TaskState::COMPLETE: return "TaskState::COMPLETE";
+					default: return "INVALID";
+					}
+				}(), task->enqueued);
+#endif
 
 			// Skip exclusives logic if there are no exclusives.
 			if (exclusives_access->is_empty()) {
 				task->state = TaskState::EXECUTING;
-				break;
+				goto EXECUTE;
 			}
 
 			Array<Task::Exclusive> exclusives;
@@ -312,7 +518,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 
 			if (num_exclusives_executing == 0) {
 				task->state = TaskState::EXECUTING;
-				break;
+				goto EXECUTE;
 			} else {
 				task->prerequisites_remaining += num_exclusives_executing;
 #if ASSERTIONS_ENABLED
@@ -320,6 +526,8 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 #endif
 			}
 		}
+	EXECUTE:
+		ASSERT(task->state.load(std::memory_order_relaxed) == TaskState::EXECUTING);
 
 		// Execute the task.
 		task->fn(task);
@@ -432,7 +640,7 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 	ASSERT(!task->has_completed());
 	ASSERT(!task->enqueued);
 	ASSERT(!std::ranges::contains(prerequisites, task));
-	ASSERT(!std::ranges::contains(exclusives, task));
+	//ASSERT(!std::ranges::contains(exclusives, task));
 
 #if ASSERTIONS_ENABLED
 	task->enqueued = true;
@@ -443,25 +651,28 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 		for (const auto& exclusive : exclusives) {
 			ASSERT(exclusive);
 
-			Task::add_exclusive(task, exclusive);
-#if 0
-#if 0
-			exclusive->exclusives.lock_shared()->enqueue(task);
-			task->exclusives.get_unsafe().enqueue(exclusive);// Shouldn't be enqueued so should be safe to not lock.
-#else
-			auto mutex = std::make_shared<Mutex>();
+			struct Accessor final : public WeakPtr<Task> {
+				[[nodiscard]] static constexpr auto get_data(const WeakPtr<Task>& value) -> Task* {
+					return static_cast<const Accessor&>(value).get();
+				}
+			};
 
-			task->exclusives.get_unsafe().enqueue(Task::Exclusive{
-				.other = exclusive,
-				.mutex = mutex,
-			});
+			// Ensure the task isn't already enqueued as an exclusive.
+			if (exclusive != task && !task->exclusives.get_unsafe().for_each_with_break([&](const Task::Exclusive& exclusive_info) {
+				return Accessor::get_data(exclusive_info.other) != exclusive.get();
+			})) {
+				auto mutex = std::make_shared<Mutex>();
 
-			exclusive->exclusives.lock_shared()->enqueue(Task::Exclusive{
-				.other = task,
-				.mutex = std::move(mutex),
-			});
-#endif
-#endif
+				task->exclusives.get_unsafe().enqueue(Task::Exclusive{
+					.other = exclusive,
+					.mutex = mutex,
+				});
+
+				exclusive->exclusives.lock_shared()->enqueue(Task::Exclusive{
+					.other = task,
+					.mutex = std::move(mutex),
+				});
+			}
 		}
 	}
 
@@ -478,7 +689,7 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 		}
 	}
 
-	task->prerequisites_remaining += num_prerequisites;
+	num_prerequisites = task->prerequisites_remaining += num_prerequisites;
 
 	for (const auto& prerequisite : prerequisites) {
 		prerequisite->subsequents_mutex.unlock_shared();

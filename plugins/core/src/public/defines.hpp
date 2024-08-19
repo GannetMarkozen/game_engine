@@ -52,7 +52,13 @@ static_assert(false, "EXPORT_API already defined!");
 
 #define ASSUME(...) __builtin_assume(__VA_ARGS__)
 #define UNREACHABLE __builtin_unreachable()
+
+#if RELEASE_BUILD
 #define FORCEINLINE __attribute__((always_inline)) inline
+#else
+#define FORCEINLINE inline
+#endif
+
 #define NOINLINE __attribute__((noinline))
 
 #elif COMPILER_MSVC

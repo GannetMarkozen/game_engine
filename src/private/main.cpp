@@ -1,101 +1,103 @@
+#include "defines.hpp"
+#include "ecs/ids.hpp"
 #include "threading/task.hpp"
 #include "threading/thread_safe_types.hpp"
 #include <chrono>
 #include <mutex>
+#include "ecs/world.hpp"
+#include "ecs/app.hpp"
 
-auto main() -> int {
-	using Task = task::Task;
+struct Vec3 {
+	f32 x, y, z;
+};
 
-	Atomic<bool> any_task_executing = false;
-	Atomic<u32> count = 0;
+template <usize I>
+struct Group {};
 
-	task::init(32);
+template <usize I>
+struct SpawningSystem {
+	static inline constinit Atomic<u32> execution_count = 0;
 
-	task::enqueue([&] {
-#if 0
-		#if 0
-		Array<SharedPtr<Task>> tasks;
-		for (usize i = 0; i < 500; ++i) {
-			tasks.push_back(Task::make([&] {
-				const bool previous_value = any_task_executing.exchange(true);
-				//ASSERTF(!previous_value, "Some task was executing alongside others!");
-				if (previous_value) {
-					WARN("Overlapping execution!");
-				}
+	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements {
+		return {
+			//.writes = ecs::CompMask::make<Vec3>(),
+		};
+	}
 
-				const auto value = ++count;
-				fmt::println("Executing {} on {}", value, std::hash<std::thread::id>{}(std::this_thread::get_id()));
+	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
+		WARN("EXECUTING {} {}", I, execution_count++);
 
-				std::this_thread::sleep_for(std::chrono::milliseconds{5});
+		++execution_count;
 
-				any_task_executing.store(false);
-			}));
-		}
+		using namespace ecs;
 
-		for (auto task : tasks) {
-			const auto priority = task->priority;
-			const auto thread = task->thread;
-
-			Array<SharedPtr<Task>> exclusives;
-			for (auto other_task : tasks) {
-				if (task != other_task) {
-					exclusives.push_back(std::move(other_task));
-				}
-			}
-
-			task::enqueue(std::move(task), priority, thread, {}, exclusives);
-		}
-		#endif
-
-		const auto start = std::chrono::high_resolution_clock::now();
-
-		task::parallel_for(100000, [&](const usize i) {
-			//fmt::println("{}", i);
-		});
-
-		const auto end = std::chrono::high_resolution_clock::now();
-
-		fmt::println("Duration == {}", std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
-#endif
-
-		Atomic<u32> some_count = 0;
-		Atomic<ThreadId> are_any_tasks_executing = ThreadId::invalid_id();
-
-		Array<SharedPtr<Task>> tasks;
-		for (usize i = 0; i < 1000; ++i) {
-			tasks.push_back(Task::make([&some_count, &are_any_tasks_executing] {
-				const ThreadId currently_executing = are_any_tasks_executing.exchange(thread::get_this_thread_id());
-				ASSERTF(!currently_executing.is_valid(), "{} was executing while {} was executing!", currently_executing.get_value(), thread::get_this_thread_id().get_value());
-
-				//std::this_thread::sleep_for(std::chrono::milliseconds{2});
-				const auto value = ++some_count;
-
-				fmt::println("Executed {}", value);
-
-				are_any_tasks_executing.store(ThreadId::invalid_id());
-			}));
-		}
+		ASSERT(&context.world);
 
 #if 01
-		for (usize i = 0; i < tasks.size(); ++i) {
-			auto clone = tasks;
-			clone.erase(clone.begin() + i);
-
-			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, {}, i == 0 ? Span<const SharedPtr<Task>>{} : Span<const SharedPtr<Task>>{{tasks[i - 1]}});
+		//if constexpr (I == 0)
+		for (usize i = 0; i < 100; ++i) {
+			const Entity entity = context.world.spawn_entity(
+				Vec3{
+					.x = static_cast<f32>(i),
+					.y = 420,
+					.z = 69,
+				}
+			);
 		}
 #else
-		task::enqueue(tasks[0]);
-		for (usize i = 1; i < tasks.size(); ++i) {
-			task::enqueue(tasks[i], task::Priority::NORMAL, task::Thread::ANY, Span<const SharedPtr<Task>>{{tasks[i - 1]}});
-		}
+		const Entity entity = context.world.spawn_entity(
+				Vec3{
+					.x = 100,
+					.y = 420,
+					.z = 69,
+				}
+			);
 #endif
+		context.world.is_pending_destruction = true;
+	}
+};
 
-		task::busy_wait_for_tasks_to_complete(tasks);
+struct LoopSystem {
+[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements { return { .writes = ecs::CompMask::make<Vec3>(), }; }
 
-		fmt::println("count == {}", some_count.load(std::memory_order_relaxed));
-	}, task::Priority::HIGH, task::Thread::MAIN);
+FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
+	//std::this_thread::sleep_for(std::chrono::seconds{2});
 
-	task::do_work_until_all_tasks_complete();
+#if 0
+	ASSERTF(SpawningSystem<0>::execution_count.load(std::memory_order_relaxed) == SpawningSystem<1>::execution_count.load(std::memory_order_relaxed),
+		"Count mismatch! {} != {}!", SpawningSystem<0>::execution_count.load(std::memory_order_relaxed), SpawningSystem<1>::execution_count.load(std::memory_order_relaxed));
+#endif
+	context.world.dispatch_event<ecs::event::OnInit>();
+}
+};
 
-	task::deinit();
+struct EndFrameGroup {};
+
+auto main() -> int {
+	using namespace ecs;
+
+	App::build()
+		.register_group<Group<0>>(Ordering{
+			.before = GroupMask::make<Group<1>>(),
+		})
+		.register_group<Group<1>>()
+		.register_system<SpawningSystem<0>>(SystemDesc{
+			//.group = get_group_id<Group<0>>(),
+			.event = get_event_id<event::OnInit>(),
+		})
+		#if 0
+		.register_system<SpawningSystem<1>>(SystemDesc{
+			//.group = get_group_id<Group<1>>(),
+			.event = get_event_id<event::OnInit>(),
+		})
+		#endif
+		.register_group<EndFrameGroup>(Ordering{
+			.within = GroupId::invalid_id(),
+			.after = GroupMask::make<group::GameFrame>(),
+		})
+		.register_system<LoopSystem>(SystemDesc{
+			.group = get_group_id<EndFrameGroup>(),
+			.event = get_event_id<event::OnInit>(),
+		})
+		.run();
 }

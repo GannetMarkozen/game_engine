@@ -5,6 +5,8 @@
 #include "ids.hpp"
 #include "entity.hpp"
 
+struct Task;
+
 namespace ecs {
 struct ArchetypeDesc {
 	[[nodiscard]] FORCEINLINE constexpr auto operator==(const ArchetypeDesc& other) const -> bool {
@@ -74,17 +76,12 @@ struct EXPORT_API Archetype {
 	}
 
 	auto for_each_chunk_in_range(const usize start, const usize count, ::cpts::Invokable<Chunk&, usize, usize> auto&& fn) -> void {
-		fmt::println("Start == {}. Count == {}", start, count);
-
 		if (num_entities == 0) {
 			return;
 		}
 
 		const usize start_chunk = start / num_entities_per_chunk;
 		const usize end_chunk = (start + count - 1) / num_entities_per_chunk;
-		//const usize end_chunk = math::divide_and_round_up(start + count - 1, num_entities_per_chunk) - 1;
-
-		fmt::println("start chunk == {}. end chunk == {}. count == {}", start_chunk, end_chunk, count);
 
 		if (start_chunk == end_chunk) {
 			Chunk& chunk = get_chunk(start_chunk);
@@ -394,6 +391,10 @@ struct EXPORT_API Archetype {
 		Chunk& chunk = get_chunk(index / num_entities_per_chunk);
 		const usize index_within_chunk = index % num_entities_per_chunk;
 		return {get<Ts>(chunk, index_within_chunk)...};
+	}
+
+	[[nodiscard]] auto get_entity(const usize index) const -> Entity {
+		return reinterpret_cast<const Entity*>(&const_cast<Archetype*>(this)->get_chunk(index / num_entities_per_chunk).data[entity_offset_within_chunk])[index % num_entities_per_chunk];
 	}
 
 #if 0

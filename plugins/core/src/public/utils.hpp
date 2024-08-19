@@ -74,16 +74,17 @@ constexpr StringView SYMBOL_REDIRECTS[][2] = {
 };
 
 constexpr StringView TYPE_DELIMITER_CHARS{"<>: *&,"};
+}
 
 template <typename T>
-struct TypeNameInstantiator {
-	EXPORT_API inline static const String VALUE = [] {
+[[nodiscard]] FORCEINLINE auto get_type_name() -> StringView {
+	static const auto NAME = [] {
 		auto name = String{get_raw_type_name<T>()};
-		for (const auto& [redirect_from, redirect_to] : TYPE_NAME_REDIRECTS) {
+		for (const auto& [redirect_from, redirect_to] : impl::TYPE_NAME_REDIRECTS) {
 			usize current_position = 0;
 			while ((current_position = name.find(redirect_from, current_position)) != String::npos) {
-				if ((current_position == 0 || TYPE_DELIMITER_CHARS.contains(name[current_position - 1]) &&
-					(current_position == name.size() || TYPE_DELIMITER_CHARS.contains(name[current_position + redirect_from.size()])))) {
+				if ((current_position == 0 || impl::TYPE_DELIMITER_CHARS.contains(name[current_position - 1]) &&
+					(current_position == name.size() || impl::TYPE_DELIMITER_CHARS.contains(name[current_position + redirect_from.size()])))) {
 					name.replace(current_position, redirect_from.size(), redirect_to);
 				} else {
 					current_position += redirect_from.size();
@@ -100,12 +101,8 @@ struct TypeNameInstantiator {
 
 		return name;
 	}();
-};
-}
 
-template <typename T>
-[[nodiscard]] FORCEINLINE auto get_type_name() -> StringView {
-	return StringView{impl::TypeNameInstantiator<T>::VALUE};
+	return StringView{NAME};
 }
 
 template <typename>

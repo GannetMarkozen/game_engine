@@ -27,8 +27,8 @@ struct SystemDesc {
 	GroupId group = get_group_id<group::GameFrame>();
 	EventId event = get_event_id<event::OnUpdate>();
 	AccessRequirements access_requirements;
-	task::Priority priority = task::Priority::NORMAL;
-	task::Thread thread = task::Thread::ANY;
+	Priority priority = Priority::NORMAL;
+	Thread thread = Thread::ANY;
 };
 
 struct App {

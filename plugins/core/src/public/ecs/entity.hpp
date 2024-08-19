@@ -27,6 +27,28 @@ struct Entity {
 		return value;
 	}
 
+	// Whether or not this entity points to anything at all.
+	// @NOTE: This returning false does not necessarily mean the entity is valid!
+	[[nodiscard]] FORCEINLINE constexpr auto is_null() const -> bool {
+		return value == UINT64_MAX;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr operator bool() const {
+		return !is_null();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator!() const -> bool {
+		return is_null();
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const Entity& other) const -> bool {
+		return value == other.value;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto operator!=(const Entity& other) const -> bool {
+		return value != other.value;
+	}
+
 	[[nodiscard]] FORCEINLINE constexpr auto operator<=>(const Entity& other) const {
 		return value <=> other.value;
 	}
@@ -62,6 +84,10 @@ struct fmt::formatter<Entity> {
 
 	template <typename FmtContext>
 	auto format(const Entity entity, FmtContext& context) {
-		return fmt::format_to(context.out(), "Entity{{ .index = {}, .version = {} }}", entity.get_index(), entity.get_version());
+		if (entity.is_null()) {
+			return fmt::format_to(context.out(), "Entity{{ NULL }}");
+		} else {
+			return fmt::format_to(context.out(), "Entity{{ .index = {}, .version = {} }}", entity.get_index(), entity.get_version());
+		}
 	}
 };

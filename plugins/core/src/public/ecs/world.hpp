@@ -2,18 +2,215 @@
 
 #include "system.hpp"
 #include "archetype.hpp"
-#include "entity_list.hpp"
 #include "threading/thread_safe_types.hpp"
 #include "threading/task.hpp"
-
-namespace task { struct Task; }
+#include <variant>
 
 namespace ecs {
 struct App;
 struct World;
+
+struct PendingEntityConstruction {
+	Entity entity;
+	Array<Any> comps;
+};
+
+struct ArchetypeTraversal {
+	[[nodiscard]] FORCEINLINE constexpr auto operator==(const ArchetypeTraversal& other) const -> bool {
+		return from == other.from && to == other.to;
+	}
+
+	[[nodiscard]] FORCEINLINE constexpr auto hash() const -> usize {
+		if constexpr (std::same_as<usize, u64>) {
+			return from.get_value() | static_cast<u64>(to) << 32;
+		} else {
+			return math::hash_combine(from.get_value(), to.get_value());
+		}
+	}
+
+	ArchetypeId from, to;
+};
 }
 
+template <>
+struct std::hash<ecs::ArchetypeTraversal> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::ArchetypeTraversal& value) const -> usize {
+		return value.hash();
+	}
+};
+
 namespace ecs {
+struct EntityDesc {
+	[[nodiscard]] constexpr auto is_initialized() const -> bool {
+		return archetype.is_valid();
+	}
+
+	[[nodiscard]] constexpr auto is_pending_construction() const -> bool {
+		return !is_initialized();
+	}
+
+	usize index_within_archetype: sizeof(usize) * 8 - 1 = std::numeric_limits<u64>::max() >> 1;
+	usize is_pending_destruction: 1 = false;
+	ArchetypeId archetype = ArchetypeId::invalid_id();
+	ArchetypeId pending_archetype_traversal = ArchetypeId::invalid_id();
+};
+
+struct EntityList {
+	static constexpr u32 INVALID_INDEX = std::numeric_limits<u32>::max();
+
+	struct Slot {
+		Variant<u32, EntityDesc> desc_or_next{std::in_place_type<u32>, INVALID_INDEX};// @TODO: Remove the Variant and use a union to avoid padding, means more manual management though.
+		u32 version = std::numeric_limits<u32>::max();// Starts at max. operator++ will overflow back to 0 for first version.
+	};
+
+	struct Chunk {
+		static constexpr usize SLOTS_COUNT = math::divide_and_round_up(UINT16_MAX, sizeof(Slot));
+
+		constexpr explicit Chunk(const u32 chunk_index) {
+			// Initialize each "next" slot index to point to this slot index + 1.
+			for (u32 i = 0; i < SLOTS_COUNT - 1; ++i) {
+				std::get<u32>(slots[i].desc_or_next) = i + 1 + chunk_index * SLOTS_COUNT;
+			}
+
+			ASSERT(std::get<u32>(slots[SLOTS_COUNT - 1].desc_or_next) == INVALID_INDEX);
+		}
+
+		Slot slots[SLOTS_COUNT];
+		UniquePtr<Chunk> next = null;
+	};
+
+	[[nodiscard]] auto reserve_entity() -> Entity {
+		if (next_available_index != INVALID_INDEX) {
+			Chunk* chunk = &head;
+			for (usize i = 0; i < next_available_index / Chunk::SLOTS_COUNT; ++i, chunk = chunk->next.get());
+
+			Slot& slot = chunk->slots[next_available_index % Chunk::SLOTS_COUNT];
+			ASSERT(std::holds_alternative<u32>(slot.desc_or_next));
+
+			const u32 slot_next = std::get<u32>(slot.desc_or_next);
+
+			Entity out{next_available_index, ++slot.version};
+			next_available_index = slot_next;
+
+			// Replace with EntityDesc.
+			slot.desc_or_next.emplace<EntityDesc>();
+
+			return out;
+		} else {
+			u32 chunk_index = 0;
+			Chunk* tail = &head;
+			for (; tail->next; tail = tail->next.get(), ++chunk_index);
+
+			tail->next = std::make_unique<Chunk>(chunk_index + 1);
+
+			Slot& slot = tail->next->slots[0];
+			ASSERT(std::holds_alternative<u32>(slot.desc_or_next));
+
+			next_available_index = std::get<u32>(slot.desc_or_next);
+
+			Entity out{next_available_index - 1, ++slot.version};
+
+			slot.desc_or_next.emplace<EntityDesc>();
+
+			return out;
+		}
+	}
+
+	auto free_entity(const Entity entity) -> void {
+		assert_is_entity_valid(entity);
+
+		if (entity.get_index() < next_available_index) {
+			Chunk* chunk = &head;
+			for (u32 i = 0; i < entity.get_index() / Chunk::SLOTS_COUNT; ++i, chunk = chunk->next.get());
+
+			Slot& slot = chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT];
+			ASSERT(std::holds_alternative<EntityDesc>(slot.desc_or_next));
+
+			slot.desc_or_next.emplace<u32>(next_available_index);
+			next_available_index = entity.get_index();
+		} else {
+			u32 next = next_available_index;
+			u32 chunk_index = 0;
+			Chunk* chunk = &head;
+			while (true) {
+				for (; chunk_index < next / Chunk::SLOTS_COUNT; ++chunk_index, chunk = chunk->next.get());
+
+				Slot& slot = chunk->slots[next % Chunk::SLOTS_COUNT];
+				ASSERT(std::holds_alternative<u32>(slot.desc_or_next));
+
+				u32& slot_next = std::get<u32>(slot.desc_or_next);
+
+				if (slot_next == INVALID_INDEX || slot_next > entity.get_index()) {// Point current slot to entity index and slot at entity index to slot_next (insert into linked-list).
+					const u32 old_slot_next = slot_next;
+					slot_next = entity.get_index();
+
+					for (; chunk_index < entity.get_index() / Chunk::SLOTS_COUNT; ++chunk_index, chunk = chunk->next.get());
+
+					Slot& entity_slot = chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT];
+					ASSERT(std::holds_alternative<EntityDesc>(entity_slot.desc_or_next));
+
+					entity_slot.desc_or_next.emplace<u32>(old_slot_next);
+					break;
+				} else {
+					next = slot_next;// Continue.
+				}
+			}
+		}
+	}
+
+	[[nodiscard]] auto is_entity_valid(const Entity entity) const -> bool {
+		if (!entity) {
+			return false;
+		}
+
+		const Chunk* chunk = &head;
+		for (u32 i = 0; i < entity.get_index() / Chunk::SLOTS_COUNT; ++i) {
+			if (!(chunk = chunk->next.get())) {
+				return false;
+			}
+		}
+
+		// Check that versions match.
+		return chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT].version == entity.get_version();
+	}
+
+	FORCEINLINE auto assert_is_entity_valid(const Entity entity) const -> void {
+#if ASSERTIONS_ENABLED
+		ASSERTF(!entity.is_null(), "INVALID ENTITY! Entity is NULL!");
+
+		const Chunk* chunk = &head;
+		for (u32 i = 0; i < entity.get_index() / Chunk::SLOTS_COUNT; ++i, chunk = chunk->next.get()) {
+			ASSERTF(!!chunk, "INVALID ENTITY! Entity index {} is out of range {}!", entity.get_index(), i * Chunk::SLOTS_COUNT);
+		}
+
+		const Slot& slot = chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT];
+		ASSERTF(slot.version == entity.get_version(), "INVALID ENTITY! Version mismatch (dangling reference): {} != {}!", entity.get_version(), slot.version);
+		ASSERTF(std::holds_alternative<EntityDesc>(slot.desc_or_next), "INVALID ENTITY! {} has been freed already!", entity);
+#endif
+	}
+
+	template <typename Self>
+	[[nodiscard]] auto get_entity_desc(this Self&& self, const Entity entity) -> auto& {
+		self.assert_is_entity_valid(entity);
+
+		auto* chunk = &self.head;
+		for (u32 i = 0; i < entity.get_index() / Chunk::SLOTS_COUNT; ++i, chunk = chunk->next.get());
+
+		auto& slot = chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT];
+		ASSERT(std::holds_alternative<EntityDesc>(slot.desc_or_next));
+
+		return std::get<EntityDesc>(slot.desc_or_next);
+	}
+
+	[[nodiscard]] auto is_entity_initialized(const Entity entity) const -> bool {
+		ASSERTF(is_entity_valid(entity), "{} is invalid!", entity);
+		return get_entity_desc(entity).is_initialized();
+	}
+
+	Chunk head{0};
+	u32 next_available_index = 0;
+};
+
 struct ExecContext {
 	using DeferredFn = Fn<void(const ExecContext&)>;
 
@@ -29,8 +226,6 @@ struct ExecContext {
 
 // @TODO: Archetype construction, deferred entity initialization, observers, resources, system "activation".
 struct World {
-	using Task = task::Task;
-
 	NON_COPYABLE(World);
 
 	explicit World(const App& app [[clang::lifetimebound]]);
@@ -254,6 +449,7 @@ struct World {
 	}
 #endif
 
+#if 0
 	// NOT thread-safe. Systems with proper access requirements should be the only modifiers. Just don't parallel_for this.
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
 	auto spawn_entity(ExecContext& context, Comps&&... comps) -> Entity {
@@ -311,6 +507,234 @@ struct World {
 
 		return entity;
 	}
+#endif
+
+#if 0
+	template <bool ALWAYS_DEFER = false, typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entity(const ExecContext& context, Comps&&... comps) -> Entity {
+		const ArchetypeDesc archetype_desc{
+			.comps = CompMask::make<std::decay_t<Comps>...>(),
+		};
+
+		ASSERTF((archetype_desc.comps & get_system_access_requirements(context.currently_executing_system).modifies) == archetype_desc.comps,
+			"Currently executing system {} does not have the proper access requirements to spawn entity! Missing modification access for components: {}",
+			context.currently_executing_system, archetype_desc.comps & ~get_system_access_requirements(context.currently_executing_system).modifies);
+
+		const auto [archetype, archetype_id] = find_or_create_archetype(archetype_desc);
+
+		Entity entity{NO_INIT};
+		{
+			auto entities_access = entities.write();
+
+			entity = entities_access->reserve_entity();
+
+			// Whether or not we can immediately construct the entity (meaning this system during execution isn't capable of accessing the target archetype). Else enqueue for after execution.
+			const AccessRequirements& access_requirements = get_system_access_requirements(context.currently_executing_system);
+			const bool can_construct_entity_immediately = !(archetype_desc.comps & (access_requirements.reads | access_requirements.writes)) || context.currently_executing_system_thread != std::this_thread::get_id();
+
+			if (!ALWAYS_DEFER && can_construct_entity_immediately) {
+				const usize index_within_archetype = archetype.add_entity(entity, std::forward<Comps>(comps)...);
+				EntityDesc& entity_desc = entities_access->get_entity_desc(entity);
+				entity_desc.archetype_id = archetype_id;
+				entity_desc.index_within_archetype = index_within_archetype;
+			} else {
+				entities_access.unlock();// No longer needed.
+
+				
+			}
+		}
+	}
+#endif
+
+	static inline Atomic<u32> count = 0;
+
+	// Enqueues a task that will run before / after any accessing systems (biasing before if possible) so it will be thread-safe to modify the archetype (assuming nothing else is also accessing the archetype).
+	template <bool ASSUMES_LOCKED = false>
+	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY) -> SharedPtr<Task> {
+		ASSERT(!archetypes.empty());
+
+		SharedPtr<Task> out_task = Task::make(std::move(fn), priority, thread);
+
+		// Schedule out_task against systems (biasing to execute before other systems if possible).
+		{
+			UniqueSharedLock _{ASSUMES_LOCKED ? null : &system_tasks_mutex};
+
+			for (const auto* archetype : archetypes) {
+				get_accessing_systems(archetype->description).for_each([&](const SystemId id) {
+					auto task = system_tasks[id].lock();
+					if (task) {// First try and schedule out_task before the system task, if that fails then schedule out_task after system_task. Guaranteed order dependance as long as systems are ordered.
+					#if 0
+						const auto result = out_task->add_subsequent(task);
+						ASSERT(result != Task::AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED);
+
+						if (result == Task::AddSubsequentResult::SUBSEQUENT_ALREADY_EXECUTING) {
+							const auto other_result = task->add_subsequent(out_task);
+							if (other_result == Task::AddSubsequentResult::SUCCESS) {
+								fmt::println("Enqueueing after {}", get_type_info(id).name);
+							}
+						} else if (result == Task::AddSubsequentResult::SUCCESS) {
+							fmt::println("Enqueueing before {}", get_type_info(id).name);
+						}
+						#endif
+
+						const auto result = Task::try_add_subsequent_else_add_prerequisite(out_task, task);
+						if (result != Task::TryAddSubsequentElsePrerequisiteResult::FAIL) {
+							if (result == Task::TryAddSubsequentElsePrerequisiteResult::ADDED_SUBSEQUENT) {
+								fmt::println("Enqueued before {}", get_type_info(id).name);
+							} else {
+								fmt::println("Enqueued after {}", get_type_info(id).name);
+							}
+						} else {
+							fmt::println("{} failed to do thing", get_type_info(id).name);
+						}
+					}
+				});
+			}
+		}
+
+		task::enqueue(out_task, priority, thread);
+
+		return out_task;
+	}
+
+	static inline constinit Atomic<bool> exclusively_executing = false;
+
+	template <bool ASSUMES_LOCKED = false>
+	auto enqueue_archetype_ctor_dtor_mod_task(Archetype& archetype, const ArchetypeId archetype_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY) -> SharedPtr<Task> {
+		const Archetype* archetype_ptr = &archetype;// Need a memory address to create a span.
+		return enqueue_archetype_mod_task<ASSUMES_LOCKED>([this, &archetype, archetype_id](const SharedPtr<Task>& this_task) {
+			const bool previous = exclusively_executing.exchange(true);
+			ASSERTF(!previous, "Not executing exclusively!");
+
+			UniqueLock<Mutex> l1{null};
+			UniqueExclusiveLock<SharedMutex> l2{null};
+
+			u32 num_retries = 0;
+			while (true) {
+				l1 = UniqueLock{pending_entity_ctor_dtor.get_mutex()};
+				if (auto result = UniqueExclusiveLock<SharedMutex>::from_try_lock(entities.get_mutex())) {
+					l2 = std::move(*result);
+					break;
+				}
+
+				l1.unlock();
+				l2.unlock();
+
+				thread::exponential_yield(num_retries);
+			}
+
+			fmt::println("Count == {}", count++);
+			auto [dtors, ctors] = [&] {
+				const auto it = pending_entity_ctor_dtor.get_unsafe().find(archetype_id);
+				ASSERT(it != pending_entity_ctor_dtor.get_unsafe().end());
+
+				auto out = std::move(it->second);
+				pending_entity_ctor_dtor.get_unsafe().erase(archetype_id);
+
+				return out;
+			}();
+
+			ASSERT(!dtors.empty() || !ctors.empty());
+
+			auto* access = &entities.get_unsafe();
+
+			// First destroy entities.
+			for (const Entity entity : dtors) {
+				const usize index_within_archetype = access->get_entity_desc(entity).index_within_archetype;
+				const bool is_last_entity = index_within_archetype + 1 == archetype.num_entities;
+
+				archetype.remove_at(index_within_archetype);
+
+				if (!is_last_entity) {
+					const Entity swapped_entity = archetype.get_entity(index_within_archetype);
+					access->get_entity_desc(swapped_entity).index_within_archetype = index_within_archetype;
+				}
+			}
+
+			// Spawn entities.
+			if (!ctors.empty()) {
+				const usize start = archetype.add_uninitialized_entities(ctors.size());
+
+				// Assign entity indices within chunk.
+				for (usize i = 0; i < ctors.size(); ++i) {
+					access->get_entity_desc(ctors[i].entity).index_within_archetype = start + i;
+				}
+
+				usize num_already_constructed = 0;
+				archetype.for_each_chunk_from_start(start, [&](Archetype::Chunk& chunk, const usize index_within_chunk, const usize count) {
+					ASSERT(&chunk);
+					ASSERTF(count + num_already_constructed <= ctors.size(), "Attempted to iterate over {} entities when size is {}!",
+						count + num_already_constructed, ctors.size());
+
+					// @TODO: This would be much faster if entities and components passed in were contiguously aligned.
+					for (usize i = 0; i < count; ++i) {
+						// Construct components.
+						for (Any& comp : ctors[i + num_already_constructed].comps) {
+							ASSERT(!!comp.get_type());
+
+							const auto& type_info = *comp.get_type();
+
+							const auto it = std::ranges::find_if(archetype.comps, [&](const Archetype::CompInfo& info) { return &type_info == &get_type_info(info.id); });
+							ASSERTF(it != archetype.comps.end(), "Component {} does not exist on archetype!", type_info.name);
+
+							void* dst = &chunk.data[it->offset_within_chunk + (index_within_chunk + i) * type_info.size];
+							void* src = comp.get_data();
+
+							type_info.move_construct(dst, src, 1);
+						}
+
+						// Construct entities.
+						Entity* dst = reinterpret_cast<Entity*>(&chunk.data[archetype.entity_offset_within_chunk + (index_within_chunk + i) * sizeof(Entity)]);
+
+						std::construct_at(dst, ctors[i + num_already_constructed].entity);
+					}
+
+					num_already_constructed += count;
+				});
+			}
+
+			exclusively_executing.store(false);
+		}, Span<const Archetype*>{&archetype_ptr, 1}, priority, thread);
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entity(Comps&&... comps) -> Entity {
+		const ArchetypeDesc archetype_desc{
+			.comps = CompMask::make<std::decay_t<Comps>...>(),
+		};
+
+		const auto [archetype, archetype_id] = find_or_create_archetype(archetype_desc);
+
+		const Entity entity = entities.write()->reserve_entity();
+
+		PendingEntityConstruction ctor{
+			.entity = entity,
+		};
+
+		((ctor.comps.emplace_back(Any::make<std::decay_t<Comps>>(std::forward<Comps>(comps)))), ...);
+
+		const bool first_inserted_for_archetype = [&] {
+			const auto access = pending_entity_ctor_dtor.lock();
+
+			const auto [it, inserted] = access->try_emplace(archetype_id);
+			ASSERT(it != access->end());
+
+			auto& ctors = it->second.second;
+
+			ctors.push_back(std::move(ctor));
+
+			return inserted;
+		}();
+
+
+		// Enqueue the task that will handle constructing the entities.
+		if (first_inserted_for_archetype) {
+			enqueue_archetype_ctor_dtor_mod_task(archetype, archetype_id);
+		}
+
+		return entity;
+	}
+
 
 #if 0
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
@@ -337,6 +761,22 @@ struct World {
 		return entities.read()->is_entity_valid(entity);
 	}
 
+	template <bool ASSUMES_LOCKED = false>
+	auto for_each_accessing_system_task(const CompMask& comps, ::cpts::Invokable<SharedPtr<Task>> auto&& fn) const -> void {
+		const SystemMask systems = get_accessing_systems(ArchetypeDesc{
+			.comps = comps,
+		});
+
+		UniqueSharedLock _{ASSUMES_LOCKED ? null : &system_tasks_mutex};
+
+		systems.for_each([&](const SystemId id) {
+			auto task = system_tasks[id].lock();
+			if (task && !task->has_completed()) {
+				std::invoke(FORWARD_AUTO(fn), std::move(task));
+			}
+		});
+	}
+
 	const App& app;
 
 	Array<UniquePtr<SystemBase>> systems;// Indexed via SystemId.
@@ -353,11 +793,12 @@ struct World {
 	Array<ArchetypeMask> comp_archetypes_mask;// Indexed via CompId. A mask of all archetypes that contain this component.
 	Array<SystemMask> archetype_accessing_systems;// Indexed via ArchetypeId. All the systems that require access to this archetype.
 
-	RwLock<EntityList> entities;
-
-	SharedLock<MpscMap<ArchetypeId, SharedLock<MpscQueue<WeakPtr<Task>>>>> outgoing_archetype_mod_tasks;
+	Lock<Map<ArchetypeId, Pair<Array<Entity>, Array<PendingEntityConstruction>>>> pending_entity_ctor_dtor;
+	Lock<Map<ArchetypeTraversal, Array<PendingEntityConstruction>>> pending_entity_archetype_traversal;
 
 	volatile bool is_pending_destruction = false;
+
+	RwLock<EntityList> entities;// At bottom because it has a huge inline allocation.
 
 private:
 	// Sigh. Just to break circular-dependencies. Modules would be nice.
