@@ -7,6 +7,8 @@
 #include "ecs/world.hpp"
 #include "ecs/app.hpp"
 
+Atomic<ecs::SystemId> executing_system = ecs::SystemId::invalid_id();
+
 struct Vec3 {
 	f32 x, y, z;
 };
@@ -20,20 +22,23 @@ struct SpawningSystem {
 
 	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements {
 		return {
-			//.writes = ecs::CompMask::make<Vec3>(),
+			.writes = ecs::CompMask::make<Vec3>(),
 		};
 	}
 
 	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
-		WARN("EXECUTING {} {}", I, execution_count++);
+		if (execution_count++ % 100 == 0) {
+			WARN("EXECUTING {} {}", I, execution_count++);
+		}
 
-		++execution_count;
+		const auto previous = executing_system.exchange(ecs::get_system_id<SpawningSystem<I>>());
+		ASSERTF(!previous.is_valid(), "Attempted to execute {} while {} was executing!", utils::get_type_name<SpawningSystem<I>>(), ecs::get_type_info(previous).name);
 
 		using namespace ecs;
 
 		ASSERT(&context.world);
 
-#if 01
+#if 0
 		//if constexpr (I == 0)
 		for (usize i = 0; i < 100; ++i) {
 			const Entity entity = context.world.spawn_entity(
@@ -54,6 +59,8 @@ struct SpawningSystem {
 			);
 #endif
 		context.world.is_pending_destruction = true;
+
+		executing_system.store(SystemId::invalid_id());
 	}
 };
 
@@ -85,7 +92,7 @@ auto main() -> int {
 			//.group = get_group_id<Group<0>>(),
 			.event = get_event_id<event::OnInit>(),
 		})
-		#if 0
+		#if 01
 		.register_system<SpawningSystem<1>>(SystemDesc{
 			//.group = get_group_id<Group<1>>(),
 			.event = get_event_id<event::OnInit>(),

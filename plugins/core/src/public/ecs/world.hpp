@@ -546,8 +546,6 @@ struct World {
 	}
 #endif
 
-	static inline Atomic<u32> count = 0;
-
 	// Enqueues a task that will run before / after any accessing systems (biasing before if possible) so it will be thread-safe to modify the archetype (assuming nothing else is also accessing the archetype).
 	template <bool ASSUMES_LOCKED = false>
 	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY) -> SharedPtr<Task> {
@@ -563,21 +561,8 @@ struct World {
 				get_accessing_systems(archetype->description).for_each([&](const SystemId id) {
 					auto task = system_tasks[id].lock();
 					if (task) {// First try and schedule out_task before the system task, if that fails then schedule out_task after system_task. Guaranteed order dependance as long as systems are ordered.
-					#if 0
-						const auto result = out_task->add_subsequent(task);
-						ASSERT(result != Task::AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED);
-
-						if (result == Task::AddSubsequentResult::SUBSEQUENT_ALREADY_EXECUTING) {
-							const auto other_result = task->add_subsequent(out_task);
-							if (other_result == Task::AddSubsequentResult::SUCCESS) {
-								fmt::println("Enqueueing after {}", get_type_info(id).name);
-							}
-						} else if (result == Task::AddSubsequentResult::SUCCESS) {
-							fmt::println("Enqueueing before {}", get_type_info(id).name);
-						}
-						#endif
-
 						const auto result = Task::try_add_subsequent_else_add_prerequisite(out_task, task);
+						#if 0
 						if (result != Task::TryAddSubsequentElsePrerequisiteResult::FAIL) {
 							if (result == Task::TryAddSubsequentElsePrerequisiteResult::ADDED_SUBSEQUENT) {
 								fmt::println("Enqueued before {}", get_type_info(id).name);
@@ -587,6 +572,7 @@ struct World {
 						} else {
 							fmt::println("{} failed to do thing", get_type_info(id).name);
 						}
+						#endif
 					}
 				});
 			}
@@ -623,7 +609,6 @@ struct World {
 				thread::exponential_yield(num_retries);
 			}
 
-			fmt::println("Count == {}", count++);
 			auto [dtors, ctors] = [&] {
 				const auto it = pending_entity_ctor_dtor.get_unsafe().find(archetype_id);
 				ASSERT(it != pending_entity_ctor_dtor.get_unsafe().end());
@@ -636,18 +621,16 @@ struct World {
 
 			ASSERT(!dtors.empty() || !ctors.empty());
 
-			auto* access = &entities.get_unsafe();
-
 			// First destroy entities.
 			for (const Entity entity : dtors) {
-				const usize index_within_archetype = access->get_entity_desc(entity).index_within_archetype;
+				const usize index_within_archetype = entities.get_unsafe().get_entity_desc(entity).index_within_archetype;
 				const bool is_last_entity = index_within_archetype + 1 == archetype.num_entities;
 
 				archetype.remove_at(index_within_archetype);
 
 				if (!is_last_entity) {
 					const Entity swapped_entity = archetype.get_entity(index_within_archetype);
-					access->get_entity_desc(swapped_entity).index_within_archetype = index_within_archetype;
+					entities.get_unsafe().get_entity_desc(swapped_entity).index_within_archetype = index_within_archetype;
 				}
 			}
 
@@ -657,7 +640,7 @@ struct World {
 
 				// Assign entity indices within chunk.
 				for (usize i = 0; i < ctors.size(); ++i) {
-					access->get_entity_desc(ctors[i].entity).index_within_archetype = start + i;
+					entities.get_unsafe().get_entity_desc(ctors[i].entity).index_within_archetype = start + i;
 				}
 
 				usize num_already_constructed = 0;

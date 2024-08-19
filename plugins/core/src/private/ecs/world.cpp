@@ -51,6 +51,7 @@ auto World::dispatch_event(const EventId event) -> void {
 		// @NOTE: Conflicting tasks logic is potentially too much. Stalling from this should be extremely rare though. Could
 		// make a different variant of this lambda for non-conflicting
 		SharedPtr<Task> task = Task::make([this, id](const SharedPtr<Task>& this_task) -> void {
+#if 0
 			const SystemMask& conflicting_systems = app.concurrent_conflicting_systems[id];
 			const bool has_conflicting_systems = !!conflicting_systems;
 			if (has_conflicting_systems) {
@@ -114,6 +115,7 @@ auto World::dispatch_event(const EventId event) -> void {
 			} else {
 				executing_systems.mask[id.get_value()].atomic_set(true);
 			}
+#endif
 
 			ExecContext context{
 				.world = *this,
@@ -138,7 +140,7 @@ auto World::dispatch_event(const EventId event) -> void {
 		tmp_tasks.push_back(std::move(task));// system_tasks will not keep these SharedPtrs alive since it uses WeakPtrs! Need this tmp allocation until referenced.
 	});
 
-	// Assign prerequisites / subsequents.
+	// Assign prerequisites / subsequents / exclusives.
 	event_systems.for_each([&](const SystemId id) {
 		Array<SharedPtr<Task>> prerequisites;
 
@@ -166,6 +168,11 @@ auto World::dispatch_event(const EventId event) -> void {
 		}
 
 		system_prerequisites.push_back(std::move(prerequisites));
+
+		// Schedule against exclusives.
+		app.concurrent_conflicting_systems[id].for_each([&](const SystemId conflicting_id) {
+			Task::add_exclusive(system_tasks[id].lock(), system_tasks[conflicting_id].lock());
+		});
 	});
 
 	// Enqueue.

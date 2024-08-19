@@ -9,6 +9,8 @@
 
 // @TODO: Create custom allocator for SharedPtr Tasks.
 
+#define TMP_ALLOW_DOUBLE_ENQUEUE 0
+
 enum class Priority : u8 {
 	HIGH,
 	NORMAL,
@@ -403,8 +405,14 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 		// Try dequeue an available task. Else sleep this thread.
 		u64 count = 0;
 		while (true) {
+			u32 try_dequeue_retry_count = 0;
 			while (!(task = try_dequeue_task<IS_IN_MAIN_THREAD>())) [[unlikely]] {
-				// @TODO: Spin for a bit before going to sleep.
+				// Spin for a bit before going to sleep.
+				static constexpr u32 MAX_RETRY_COUNT = 64;// Arbitrary.
+				if (try_dequeue_retry_count++ < MAX_RETRY_COUNT) {
+					std::this_thread::yield();
+					continue;
+				}
 
 				auto& thread_condition = impl::get_this_thread_condition();
 
@@ -427,8 +435,14 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				thread_condition.condition.wait(lock, [&] { return !thread_condition.is_asleep; });
 			}
 
-			#if 1
-			ScopeExclusiveLock _{task->subsequents_mutex};
+#if 1
+			// @NOTE: Race-condition here. While a this task is enqueued, another task can make this task a subsequent of it and complete execution before this task is dequeued,
+			// thus enqueueing it twice. This happens very rarely so it's okay to just have the two clones of the same task race to begin executing but just use atomic exchange
+			// for execution.
+			if (task->state.load(std::memory_order_relaxed) >= TaskState::EXECUTING) {
+				continue;
+			}
+
 			auto exclusives_access = task->exclusives.lock_exclusive();
 
 			// Prerequisites were added after enqueueing. Do not execute, will be enqueued at a later time.
@@ -454,7 +468,15 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 
 			// Skip exclusives logic if there are no exclusives.
 			if (exclusives_access->is_empty()) {
+				#if TMP_ALLOW_DOUBLE_ENQUEUE
 				task->state = TaskState::EXECUTING;
+				#else
+				TaskState expected = TaskState::STANDBY;
+				if (!task->state.compare_exchange_strong(expected, TaskState::EXECUTING, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+					continue;
+				}
+				#endif
+
 				goto EXECUTE;
 			}
 
@@ -465,7 +487,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				}
 			});
 
-			exclusives_access.unlock();
+			//exclusives_access.unlock();
 
 			// Try lock all mutexes that require it.
 			Array<UniqueLock<Mutex>> exclusive_locks;
@@ -498,6 +520,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 
 				// Exponential backoff. Required for decent performance in highly contentious situations.
 				// @TODO: Should fallback to busy waiting after a duration.
+				#if 0
 				static constexpr u32 MAX_RETRIES = 8;
 				if (num_retries++ < MAX_RETRIES) {
 					std::this_thread::yield();
@@ -505,6 +528,9 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 					const std::chrono::microseconds delay{1 << std::min(num_retries - MAX_RETRIES, 4u)};
 					std::this_thread::sleep_for(delay);
 				}
+				#else
+				std::this_thread::yield();
+				#endif
 			}
 
 			u32 num_exclusives_executing = 0;
@@ -517,7 +543,15 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 			}
 
 			if (num_exclusives_executing == 0) {
+				#if TMP_ALLOW_DOUBLE_ENQUEUE
 				task->state = TaskState::EXECUTING;
+				#else
+				TaskState expected = TaskState::STANDBY;
+				if (!task->state.compare_exchange_strong(expected, TaskState::EXECUTING, std::memory_order_seq_cst, std::memory_order_relaxed)) {
+					continue;
+				}
+				#endif
+
 				goto EXECUTE;
 			} else {
 				task->prerequisites_remaining += num_exclusives_executing;
@@ -698,6 +732,14 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 	++num_tasks_in_flight;
 
 	if (num_prerequisites == 0) {// Immediately enqueue. Otherwise a prerequisite task will enqueue at a later stage.
+		queues[static_cast<u8>(thread)][static_cast<u8>(priority)]->enqueue(std::move(task));
+
+		if (should_wake_up_thread) {
+			wake_up_threads(thread);
+		}
+	}
+
+	if (num_prerequisites == 0) {
 		queues[static_cast<u8>(thread)][static_cast<u8>(priority)]->enqueue(std::move(task));
 
 		if (should_wake_up_thread) {
