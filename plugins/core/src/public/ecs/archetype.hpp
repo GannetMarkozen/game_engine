@@ -377,7 +377,6 @@ struct EXPORT_API Archetype {
 				return out;
 			}());
 
-		//return *reinterpret_cast<T*>(get_comp_data(*it, chunk, index_within_chunk));
 		return *reinterpret_cast<T*>(&chunk.data[it->offset_within_chunk + index_within_chunk * sizeof(T)]);
 	}
 
@@ -396,28 +395,6 @@ struct EXPORT_API Archetype {
 	[[nodiscard]] auto get_entity(const usize index) const -> Entity {
 		return reinterpret_cast<const Entity*>(&const_cast<Archetype*>(this)->get_chunk(index / num_entities_per_chunk).data[entity_offset_within_chunk])[index % num_entities_per_chunk];
 	}
-
-#if 0
-	template <typename T> requires (!std::is_empty_v<T>)
-	[[nodiscard]] auto get(const usize index) -> T& {
-		const auto it = std::ranges::find(comps, get_comp_id<T>(), &CompInfo::id);
-		ASSERTF(it != comps.end(), "Component {} does not exist on archetype with composition {}!",
-			utils::get_type_name<T>(), [&] {
-				String out;
-				description.comps.for_each([&](const CompId id) {
-					out += fmt::format("{}, ", TypeRegistry<CompId>::get_type_info(id).name);
-				});
-				return out;
-			}());
-
-		return *reinterpret_cast<T*>(get_comp_data(*it, get_chunk(index / num_entities_per_chunk), index % num_entities_per_chunk));
-	}
-
-	template <>
-	[[nodiscard]] auto get<Entity>(const usize index) -> Entity& {
-		return *reinterpret_cast<Entity*>(&get_chunk(index / num_entities_per_chunk).data[entity_offset_within_chunk + (index % num_entities_per_chunk) * sizeof(Entity)]);
-	}
-#endif
 
 	usize num_entities = 0;
 	usize num_entities_per_chunk;

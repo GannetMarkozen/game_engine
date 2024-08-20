@@ -171,7 +171,14 @@ struct EntityList {
 		}
 
 		// Check that versions match.
-		return chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT].version == entity.get_version();
+		const Slot& slot = chunk->slots[entity.get_index() % Chunk::SLOTS_COUNT];
+		if (slot.version != entity.get_version()) {
+			return false;
+		}
+
+		ASSERT(std::holds_alternative<EntityDesc>(slot.desc_or_next));
+
+		return !std::get<EntityDesc>(slot.desc_or_next).is_pending_destruction;
 	}
 
 	FORCEINLINE auto assert_is_entity_valid(const Entity entity) const -> void {
@@ -216,6 +223,7 @@ struct ExecContext {
 
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
 	auto spawn_entity(Comps&&... comps) -> Entity;
+
 
 	World& [[clang::lifetimebound]] world;
 	const f32 delta_time;
@@ -548,10 +556,19 @@ struct World {
 
 	// Enqueues a task that will run before / after any accessing systems (biasing before if possible) so it will be thread-safe to modify the archetype (assuming nothing else is also accessing the archetype).
 	template <bool ASSUMES_LOCKED = false>
-	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY) -> SharedPtr<Task> {
+	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY,
+#if ASSERTIONS_ENABLED
+		Optional<String> task_name = {}
+#endif
+		) -> SharedPtr<Task>
+	{
 		ASSERT(!archetypes.empty());
 
-		SharedPtr<Task> out_task = Task::make(std::move(fn), priority, thread);
+		SharedPtr<Task> out_task = Task::make(std::move(fn), priority, thread, {}
+#if ASSERTIONS_ENABLED
+			, task_name ? *task_name : Task::default_name_from_source_location(std::source_location::current())
+#endif
+		);
 
 		// Schedule out_task against systems (biasing to execute before other systems if possible).
 		{
@@ -583,15 +600,10 @@ struct World {
 		return out_task;
 	}
 
-	static inline constinit Atomic<bool> exclusively_executing = false;
-
 	template <bool ASSUMES_LOCKED = false>
-	auto enqueue_archetype_ctor_dtor_mod_task(Archetype& archetype, const ArchetypeId archetype_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY) -> SharedPtr<Task> {
+	auto enqueue_archetype_ctor_dtor_mod_task(Archetype& archetype, const ArchetypeId archetype_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
 		const Archetype* archetype_ptr = &archetype;// Need a memory address to create a span.
 		return enqueue_archetype_mod_task<ASSUMES_LOCKED>([this, &archetype, archetype_id](const SharedPtr<Task>& this_task) {
-			const bool previous = exclusively_executing.exchange(true);
-			ASSERTF(!previous, "Not executing exclusively!");
-
 			UniqueLock<Mutex> l1{null};
 			UniqueExclusiveLock<SharedMutex> l2{null};
 
@@ -675,9 +687,131 @@ struct World {
 					num_already_constructed += count;
 				});
 			}
+		}, Span<const Archetype*>{&archetype_ptr, 1}, priority, thread
+#if ASSERTIONS_ENABLED
+			, fmt::format("{}: flush_archetype_ctor_dtor for archetype: {}", Task::default_name_from_source_location(source_location), archetype.description.comps)
+#endif
+		);
+	}
 
-			exclusively_executing.store(false);
-		}, Span<const Archetype*>{&archetype_ptr, 1}, priority, thread);
+	template <bool ASSUMES_LOCKED = false>
+	auto enqueue_archetype_traversal_mod_task(Archetype& from, const ArchetypeId from_id, Archetype& to, const ArchetypeId to_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
+		ASSERT(&from);
+		ASSERT(from_id.is_valid());
+		ASSERT(&to);
+		ASSERT(to_id.is_valid());
+
+		const Archetype* archetypes[] = { &from, &to };
+		return enqueue_archetype_mod_task<ASSUMES_LOCKED>([this, &from, from_id, &to, to_id](const SharedPtr<Task>& this_task) {
+			const auto traversal_access = pending_entity_archetype_traversal.lock();// Need to hold this lock as long as the archetype is being modified.
+
+			Array<PendingEntityConstruction> entities = [&] {
+				const ArchetypeTraversal key{
+					.from = from_id,
+					.to = to_id,
+				};
+				const auto it = traversal_access->find(key);
+
+				ASSERT(it != traversal_access->end());
+
+				auto out = std::move(it->second);
+				traversal_access->erase(key);
+
+				return out;
+			}();
+
+			const usize start = to.add_uninitialized_entities(entities.size());
+
+			// Comps that need to be moved from one archetype to the other.
+			const CompMask comps_to_relocate = from.description.comps & to.description.comps;
+
+			Array<usize> from_offsets_within_chunk;
+			Array<usize> to_offsets_within_chunk;
+
+			const usize comps_to_relocate_count = comps_to_relocate.mask.count_set_bits();
+			from_offsets_within_chunk.reserve(comps_to_relocate_count);
+			to_offsets_within_chunk.reserve(comps_to_relocate_count);
+
+			comps_to_relocate.for_each([&](const CompId id) {
+				const auto from_it = std::ranges::find(from.comps, id, &Archetype::CompInfo::id);
+				const auto to_it = std::ranges::find(to.comps, id, &Archetype::CompInfo::id);
+				ASSERT(from_it != from.comps.end());
+				ASSERT(to_it != to.comps.end());
+
+				from_offsets_within_chunk.push_back(from_it->offset_within_chunk);
+				to_offsets_within_chunk.push_back(to_it->offset_within_chunk);
+			});
+
+			ASSERT(from_offsets_within_chunk.size() == comps_to_relocate_count);
+			ASSERT(to_offsets_within_chunk.size() == comps_to_relocate_count);
+
+			const auto entities_access = this->entities.write();
+
+			// Construct components + entities at the new archetype.
+			usize num_constructed = 0;
+			to.for_each_chunk_from_start(start, [&](Archetype::Chunk& chunk, const usize index_within_chunk, const usize count) {
+				// First relocate components to the target archetype.
+				for (usize i = 0; i < count; ++i) {
+					auto& entity_traversal = entities[i + num_constructed];
+					const Entity entity = entity_traversal.entity;
+
+					// Move components.
+					usize comp_index = 0;
+					comps_to_relocate.for_each([&](const CompId id) {
+						const auto& type_info = get_type_info(id);
+						const usize entity_index_within_archetype = entities_access->get_entity_desc(entity).index_within_archetype;
+
+						void* dst = &chunk.data[to_offsets_within_chunk[comp_index] + (index_within_chunk + i) * type_info.size];
+						void* src = &from.get_chunk(entity_index_within_archetype / from.num_entities_per_chunk).data[from_offsets_within_chunk[comp_index] + ((entity_index_within_archetype % from.num_entities_per_chunk) + i) * type_info.size];
+
+						type_info.move_construct(dst, src, 1);
+					});
+
+					// Add components (if there are any).
+					for (Any& comp : entity_traversal.comps) {
+						ASSERT(comp.has_value());
+
+						const auto& type_info = *comp.get_type();
+
+						const auto it = std::ranges::find_if(to.comps, [&](const Archetype::CompInfo& info) { return &get_type_info(info.id) == &type_info; });
+						ASSERTF(it != to.comps.end(), "Component {} does not exist on archetype!", type_info.name);
+
+						const usize offset_within_chunk = it->offset_within_chunk;
+
+						void* dst = &chunk.data[offset_within_chunk + (index_within_chunk + i) * type_info.size];
+						void* src = comp.get_data();
+
+						type_info.move_construct(dst, src, 1);
+					}
+
+					// Move entities.
+					Entity* dst = reinterpret_cast<Entity*>(&chunk.data[to.entity_offset_within_chunk + (index_within_chunk + i) * sizeof(Entity)]);
+					std::construct_at(dst, entity);
+				}
+
+				num_constructed += count;
+			});
+
+			// Remove entities from the old archetype and update the EntityDesc with the new archetype.
+			for (usize i = 0; i < entities.size(); ++i) {
+				const Entity entity = entities[i].entity;
+				EntityDesc& desc = entities_access->get_entity_desc(entity);
+
+				from.remove_at(desc.index_within_archetype);
+
+				desc.archetype = to_id;
+				desc.index_within_archetype = start + i;
+
+				ASSERT(desc.pending_archetype_traversal == to_id);
+				ASSERT(!desc.is_pending_destruction);
+
+				desc.pending_archetype_traversal = ArchetypeId::invalid_id();
+			}
+		}, Span<const Archetype*>{archetypes, std::size(archetypes)}, priority, thread
+#if ASSERTIONS_ENABLED
+			, fmt::format("{}: flush_archetype_traversal from {} to {}", Task::default_name_from_source_location(source_location), from.description.comps, to.description.comps)
+#endif
+		);
 	}
 
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
@@ -718,23 +852,56 @@ struct World {
 		return entity;
 	}
 
+	auto destroy_entity(const Entity entity) -> void {
+		const ArchetypeId archetype_id = [&] {
+			auto entities_access = entities.write();
+			entities_access->assert_is_entity_valid(entity);
 
-#if 0
-	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
-	auto construct_entity_immediate(const Entity uninitialized_entity, Archetype& archetype, const ArchetypeId archetype_id, Comps&&... comps) -> void {
-		ASSERTF([&] {
-			ScopeSharedLock lock{archetypes_mutex};
-			return !(archetype_accessing_systems[archetype_id].mask & executing_systems.mask.atomic_clone());
-		}(), "Can not execute {} while systems that access this archetype are currently executing!", __PRETTY_FUNCTION__);
+			EntityDesc& desc = entities_access->get_entity_desc(entity);
 
-		const usize index_within_archetype = archetype.add_entities({uninitialized_entity}, std::forward<Comps>(comps)...);
+			desc.is_pending_destruction = true;// Mark for destruction.
 
-		entities.write()->initialize_entity(uninitialized_entity, EntityDesc{
-			.archetype_id = archetype_id,
-			.index_within_archetype = index_within_archetype,
-		});
+			// Cancel any archetype traversals.
+			if (desc.pending_archetype_traversal.is_valid()) {
+				const auto archetype_traversal_access = pending_entity_archetype_traversal.lock();
+				const auto it = archetype_traversal_access->find(ArchetypeTraversal{
+					.from = desc.archetype,
+					.to = desc.pending_archetype_traversal,
+				});
+
+				if (it != archetype_traversal_access->end()) {
+					const auto found = std::ranges::find(it->second, entity, &PendingEntityConstruction::entity);
+					ASSERT(found != it->second.end());
+
+					it->second.erase(found);
+				}
+			}
+
+			return desc.archetype;
+		}();
+
+		const bool first_inserted_for_archetype = [&] {
+			const auto ctor_dtor_access = pending_entity_ctor_dtor.lock();
+
+			const auto [it, inserted] = ctor_dtor_access->try_emplace(archetype_id);
+			ASSERT(it != ctor_dtor_access->end());
+
+			auto& dtors = it->second.first;
+
+			dtors.push_back(entity);
+
+			return inserted;
+		}();
+
+		if (first_inserted_for_archetype) {
+			Archetype& archetype = [&] -> auto& {
+				ScopeSharedLock _{archetypes_mutex};
+				return *archetypes[archetype_id];
+			}();
+
+			enqueue_archetype_ctor_dtor_mod_task(archetype, archetype_id);
+		}
 	}
-#endif
 
 	[[nodiscard]] FORCEINLINE auto reserve_entity() -> Entity {
 		return entities.write()->reserve_entity();

@@ -1,11 +1,13 @@
 #pragma once
 
 #include "core_include.hpp"
+#include "fmt/format.h"
 #include "thread_safe_types.hpp"
+#include "utils.hpp"
 #include <algorithm>
-#include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <source_location>
 
 // @TODO: Create custom allocator for SharedPtr Tasks.
 
@@ -33,41 +35,46 @@ enum class TaskState : u8 {
 struct Task {
 	struct Exclusive {
 		WeakPtr<Task> other;// The other task that runs exclusively against this task.
-		SharedPtr<Mutex> mutex;// The shared mutex for the two exclusive tasks (self and other).
+		SharedPtr<Mutex> mutex;// The shared mutex for the two exclusive tasks (self and other). A mutex for each pair (to reduce contention).
 	};
 
-	using ExclusiveHash = decltype([](const Exclusive& value) -> usize {
-		struct Accessor : public WeakPtr<Task> {
-			[[nodiscard]] static constexpr auto hash(const WeakPtr<Task>& value) -> usize {
-				return std::hash<const Task*>{}(static_cast<const Accessor&>(value).get());
-			}
-		};
-		return Accessor::hash(value.other);
-	});
-
-	using ExclusiveEqual = decltype([](const Exclusive& a, const Exclusive& b) -> bool {
-		struct Accessor : public WeakPtr<Task> {
-			[[nodiscard]] static constexpr auto equals(const WeakPtr<Task>& a, const WeakPtr<Task>& b) -> bool {
-				return static_cast<const Accessor&>(a).get() == static_cast<const Accessor&>(b).get();
-			}
-		};
-		return Accessor::equals(a.other, b.other);
-	});
-
-
-	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, MpscQueue<SharedPtr<Task>>&& subsequents = {})
-		: fn{std::move(fn)}, priority{priority}, subsequents{std::move(subsequents)}, thread{thread} {}
+	FORCEINLINE Task(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority, const Thread thread, MpscQueue<SharedPtr<Task>>&& subsequents = {}
+#if ASSERTIONS_ENABLED
+		, String name = default_name_from_source_location(std::source_location::current())
+#endif
+		)
+		: fn{std::move(fn)}, priority{priority}, subsequents{std::move(subsequents)}, thread{thread}
+#if ASSERTIONS_ENABLED
+			, name{std::move(name)}
+#endif
+		 {}
 
 	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable<const SharedPtr<Task>&> auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
-		MpscQueue<SharedPtr<Task>> subsequents = {}, MpscQueue<WeakPtr<Task>>&& exclusives = {}) -> SharedPtr<Task>
+		MpscQueue<SharedPtr<Task>> subsequents = {}
+#if ASSERTIONS_ENABLED
+		, String name = default_name_from_source_location(std::source_location::current())
+#endif
+		) -> SharedPtr<Task>
 	{
-		return std::make_shared<Task>(FORWARD_AUTO(task), priority, thread, std::move(subsequents));
+		return std::make_shared<Task>(FORWARD_AUTO(task), priority, thread, std::move(subsequents)
+#if ASSERTIONS_ENABLED
+			, std::move(name)
+#endif
+		);
 	}
 
 	[[nodiscard]] FORCEINLINE static auto make(cpts::Invokable auto&& task, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
-		MpscQueue<SharedPtr<Task>> subsequents = {}, MpscQueue<WeakPtr<Task>>&& exclusives = {}) -> SharedPtr<Task>
+		MpscQueue<SharedPtr<Task>> subsequents = {}
+#if ASSERTIONS_ENABLED
+		, String name = default_name_from_source_location(std::source_location::current())
+#endif
+		) -> SharedPtr<Task>
 	{
-		return make([task = std::move(task)](const SharedPtr<Task>&) { task(); }, priority, thread, std::move(subsequents));
+		return make([task = std::move(task)](const SharedPtr<Task>&) { task(); }, priority, thread, std::move(subsequents)
+#if ASSERTIONS_ENABLED
+			, name
+#endif
+		);
 	}
 
 	[[nodiscard]] FORCEINLINE auto has_completed() const -> bool {
@@ -182,12 +189,12 @@ struct Task {
 		}
 
 		ASSERTF(!subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
-			return subsequent == other;
-		}), "Attempted to enqueue a subsequent that is already a subsequent of this task!");
+			return subsequent != other;
+		}), "Attempted to enqueue a subsequent {} for {} that is already a subsequent of this task!", other->name, name);
 
 		ASSERTF(!other->subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
-			return subsequent.get() == this;
-		}), "Attempted to enqueue subsequent task that also has that task as a subsequent! Circular subsequent dependencies!");
+			return subsequent.get() != this;
+		}), "Attempted to enqueue subsequent task {} for {} that also has that task as a subsequent! Circular subsequent dependencies!", other->name, name);
 
 		++other->prerequisites_remaining;
 		subsequents.enqueue(std::move(other));
@@ -208,7 +215,7 @@ struct Task {
 
 		u32 retries = 0;
 		while (true) {
-			ASSERTF(retries < 1024, "Reached maximum number of retries!");
+			ASSERTF(retries < 4096, "Reached maximum number of retries!");
 
 			l1 = UniqueSharedLock{try_prerequisite->subsequents_mutex};
 
@@ -261,8 +268,14 @@ struct Task {
 	static auto add_exclusive(const SharedPtr<Task>& a, const SharedPtr<Task>& b) -> void {
 		ASSERT(a);
 		ASSERT(b);
+		#if 0
 		ASSERT(!a->contains_exclusive(*b));
 		ASSERT(!b->contains_exclusive(*a));
+		#endif
+
+		if (a->contains_exclusive(*b)) {// @TODO: Suboptimal. Extra work.
+			return;
+		}
 
 		auto mutex = std::make_shared<Mutex>();
 
@@ -283,6 +296,10 @@ struct Task {
 		});
 	}
 
+	[[nodiscard]] static constexpr auto default_name_from_source_location(const std::source_location& source_location = std::source_location::current()) -> String {
+		return fmt::format("{}:{}:{}", utils::to_compact_file_name(source_location.file_name()), source_location.line(), source_location.column());
+	}
+
 	Fn<void(const SharedPtr<Task>&)> fn;
 	MpscQueue<SharedPtr<Task>> subsequents;
 	SharedLock<MpscQueue<Exclusive>> exclusives;
@@ -293,6 +310,7 @@ struct Task {
 	Priority priority;
 	Thread thread;
 #if ASSERTIONS_ENABLED
+	String name;
 	bool enqueued = false;
 #endif
 };
@@ -438,7 +456,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 #if 1
 			// @NOTE: Race-condition here. While a this task is enqueued, another task can make this task a subsequent of it and complete execution before this task is dequeued,
 			// thus enqueueing it twice. This happens very rarely so it's okay to just have the two clones of the same task race to begin executing but just use atomic exchange
-			// for execution.
+			// for starting execution.
 			if (task->state.load(std::memory_order_relaxed) >= TaskState::EXECUTING) {
 				continue;
 			}
@@ -453,18 +471,6 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 				continue;
 			}
 			#endif
-
-#if 0
-			ASSERTF(task->state.load(std::memory_order_relaxed) == TaskState::STANDBY, "State == {}! Enqueued == {}!",
-				[&] {
-					switch (task->state.load(std::memory_order_relaxed)) {
-					case TaskState::STANDBY: return "TaskState::STANDBY";
-					case TaskState::EXECUTING: return "TaskState::EXECUTING";
-					case TaskState::COMPLETE: return "TaskState::COMPLETE";
-					default: return "INVALID";
-					}
-				}(), task->enqueued);
-#endif
 
 			// Skip exclusives logic if there are no exclusives.
 			if (exclusives_access->is_empty()) {
@@ -520,17 +526,17 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 
 				// Exponential backoff. Required for decent performance in highly contentious situations.
 				// @TODO: Should fallback to busy waiting after a duration.
-				#if 0
-				static constexpr u32 MAX_RETRIES = 8;
+#if 01
+				static constexpr u32 MAX_RETRIES = 512;
 				if (num_retries++ < MAX_RETRIES) {
 					std::this_thread::yield();
 				} else {
 					const std::chrono::microseconds delay{1 << std::min(num_retries - MAX_RETRIES, 4u)};
 					std::this_thread::sleep_for(delay);
 				}
-				#else
+#else
 				std::this_thread::yield();
-				#endif
+#endif
 			}
 
 			u32 num_exclusives_executing = 0;
@@ -567,6 +573,7 @@ NOINLINE inline auto do_work(cpts::InvokableReturns<bool> auto&& request_exit) -
 		task->fn(task);
 
 		// Dequeued the final task. Wake up all other threads and exit.
+		// @TODO: Change this to num_threads_active to reduce contention and bug-avoidance.
 		if (--num_tasks_in_flight == 0 && pending_shutdown) [[unlikely]] {
 			wake_up_all_threads();
 			return;
@@ -749,9 +756,17 @@ inline auto enqueue(SharedPtr<Task> task, const Priority priority = Priority::NO
 }
 
 inline auto enqueue(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
-	const Span<const SharedPtr<Task>> prerequisites = {}, const Span<const SharedPtr<Task>> exclusives = {}, const bool should_wake_up_thread = true) -> SharedPtr<Task>
+	const Span<const SharedPtr<Task>> prerequisites = {}, const Span<const SharedPtr<Task>> exclusives = {}, const bool should_wake_up_thread = true
+#if ASSERTIONS_ENABLED
+	, String task_name = Task::default_name_from_source_location(std::source_location::current())
+#endif
+	) -> SharedPtr<Task>
 {
-	auto task = std::make_shared<Task>(std::move(fn), priority, thread);
+	auto task = Task::make(std::move(fn), priority, thread, {}
+#if ASSERTIONS_ENABLED
+		, std::move(task_name)
+#endif
+	);
 
 	enqueue(task, priority, thread, prerequisites, exclusives, should_wake_up_thread);
 
@@ -759,9 +774,17 @@ inline auto enqueue(Fn<void(const SharedPtr<Task>&)> fn, const Priority priority
 }
 
 FORCEINLINE auto enqueue(cpts::Invokable auto&& fn, const Priority priority = Priority::NORMAL, const Thread thread = Thread::ANY,
-	const Span<const SharedPtr<Task>> prerequisites = {}, const Span<const SharedPtr<Task>> exclusives = {}, const bool should_wake_up_thread = true) -> SharedPtr<Task>
+	const Span<const SharedPtr<Task>> prerequisites = {}, const Span<const SharedPtr<Task>> exclusives = {}, const bool should_wake_up_thread = true
+#if ASSERTIONS_ENABLED
+	, String task_name = Task::default_name_from_source_location(std::source_location::current())
+#endif
+	) -> SharedPtr<Task>
 {
-	return enqueue([fn = FORWARD_AUTO(fn)](const SharedPtr<Task>&) { std::invoke(fn); }, priority, thread, prerequisites, exclusives, should_wake_up_thread);
+	return enqueue([fn = FORWARD_AUTO(fn)](const SharedPtr<Task>&) { std::invoke(fn); }, priority, thread, prerequisites, exclusives, should_wake_up_thread
+#if ASSERTIONS_ENABLED
+		, std::move(task_name)
+#endif
+	);
 }
 
 inline auto busy_wait_for_tasks_to_complete(const Span<const SharedPtr<Task>> tasks) -> void {
@@ -807,7 +830,7 @@ NOINLINE inline auto wait_for_tasks_to_complete(const Span<const SharedPtr<Task>
 }
 
 // Creates a task for each index for best thread utilization but potentially high overhead.
-inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> auto&& fn) -> void {
+inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> auto&& fn, const std::source_location& source_location = std::source_location::current()) -> void {
 	if (count <= 1) {
 		for (usize i = 0; i < count; ++i) {
 			std::invoke(fn, i);
@@ -850,7 +873,11 @@ inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> au
 			if (!--num_tasks_remaining) {
 				wake_up_thread(this_thread);
 			}
-		}, Priority::HIGH, Thread::ANY, {}, {}, false);
+		}, Priority::HIGH, Thread::ANY, {}, {}, false
+#if ASSERTIONS_ENABLED
+			, fmt::format("\"{}: task::parallel_for[{}]\"", utils::to_compact_file_name(source_location.file_name()), source_location.line(), source_location.column(), i)
+#endif
+		);
 	}
 
 	wake_up_threads(Thread::ANY, count);
@@ -860,7 +887,7 @@ inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> au
 }
 
 // Creates a task per-thread for minimal task overhead.
-inline auto parallel_for_balanced(const usize count, cpts::Invokable<usize> auto&& fn, const usize num_tasks = get_num_threads()) -> void {
+inline auto parallel_for_balanced(const usize count, cpts::Invokable<usize> auto&& fn, const usize num_tasks = get_num_threads(), const std::source_location& source_location = std::source_location::current()) -> void {
 	ASSERT(num_tasks > 0);
 
 	if (count <= 1) {
@@ -883,15 +910,15 @@ inline auto parallel_for_balanced(const usize count, cpts::Invokable<usize> auto
 		for (usize j = start; j < end; ++j) {
 			std::invoke(fn, j);
 		}
-	});
+	}, source_location);
 }
 
 template <bool BALANCED = false>
-FORCEINLINE auto parallel_for(const usize count, cpts::Invokable<usize> auto&& fn) -> void {
+FORCEINLINE auto parallel_for(const usize count, cpts::Invokable<usize> auto&& fn, const std::source_location& source_location = std::source_location::current()) -> void {
 	if constexpr (BALANCED) {
-		parallel_for_balanced(count, FORWARD_AUTO(fn));
+		parallel_for_balanced(count, FORWARD_AUTO(fn), source_location);
 	} else {
-		parallel_for_unbalanced(count, FORWARD_AUTO(fn));
+		parallel_for_unbalanced(count, FORWARD_AUTO(fn), source_location);
 	}
 }
 }

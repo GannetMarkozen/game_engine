@@ -40,6 +40,14 @@ auto App::run(const usize num_worker_threads) -> void {
 		return out;
 	}());
 
+	// Initialize nested group ordering as subsequents / prerequisites.
+	for (GroupId id = 0; id < get_num_groups(); ++id) {
+		nested_groups[id].for_each([&](const GroupId nested_id) {
+			group_subsequents[nested_id] |= group_subsequents[id];
+			group_prerequisites[nested_id] |= group_prerequisites[id];
+		});
+	}
+
 	// Clear prerequisites first as they will be regenerated based off of subsequents.
 	for (auto& prerequisites : group_prerequisites) {
 		prerequisites.mask.clear();
@@ -138,7 +146,7 @@ auto App::run(const usize num_worker_threads) -> void {
 	}
 
 	fmt::println("AFTER:");
-	//print_subsequents();
+	print_subsequents();
 
 	// Find prerequisite systems for event.
 	for (EventId id = 0; id < get_num_events(); ++id) {

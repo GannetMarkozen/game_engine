@@ -69,6 +69,7 @@ struct App {
 		return *this;
 #endif
 
+#if 0
 		if (ordering.within.is_valid()) {
 			ordering.before |= group_subsequents[ordering.within];
 			ordering.after |= group_prerequisites[ordering.within];
@@ -86,6 +87,25 @@ struct App {
 			//group_prerequisites[id].add(group);
 			group_subsequents[id].add(group);
 		});
+#else
+
+		group_subsequents[group] |= ordering.before;
+		group_prerequisites[group] |= ordering.after;
+
+		ordering.before.for_each([&](const GroupId id) {
+			//group_subsequents[id].add(group);
+			group_prerequisites[id].add(group);
+		});
+
+		ordering.after.for_each([&](const GroupId id) {
+			//group_prerequisites[id].add(group);
+			group_subsequents[id].add(group);
+		});
+
+		if (ordering.within.is_valid()) {
+			nested_groups[ordering.within].add(group);
+		}
+#endif
 
 		return *this;
 	}
@@ -138,6 +158,7 @@ struct App {
 
 	Array<GroupMask> group_subsequents;// Indexed via GroupId.
 	Array<GroupMask> group_prerequisites;// Indexed via GroupId.
+	GroupArray<GroupMask> nested_groups;
 	Array<SystemMask> group_systems;// Indexed via GroupId.
 
 	Array<SystemMask> comp_accessing_systems;// Indexed via CompId. All systems requiring access to this comp.

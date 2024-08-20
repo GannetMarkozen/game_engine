@@ -103,7 +103,7 @@ concept SharedMutex = requires(T t) {
 }
 
 namespace thread {
-template <std::integral T, T MAX_RETRIES = 8, T MAX_YIELD_EXPONENT = 8>
+template <std::integral T, T MAX_RETRIES = 1048, T MAX_YIELD_EXPONENT = 4>
 NOINLINE inline auto exponential_yield(T& retries) -> void {
 	if (retries < MAX_RETRIES) {
 		std::this_thread::yield();

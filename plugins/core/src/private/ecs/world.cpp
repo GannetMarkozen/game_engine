@@ -134,7 +134,11 @@ auto World::dispatch_event(const EventId event) -> void {
 
 			// No need for a lock here. Clearing a system can't cause race-conditions.
 			executing_systems.mask[id.get_value()].atomic_set(false);
-		}, desc.priority, desc.thread);
+		}, desc.priority, desc.thread, {}
+#if ASSERTIONS_ENABLED
+			, fmt::format("\"{}:{}:{}: {}\"", __FILE_NAME__, __LINE__, __builtin_COLUMN(), get_type_info(id).name)
+#endif
+		);
 
 		system_tasks[id] = task;
 		tmp_tasks.push_back(std::move(task));// system_tasks will not keep these SharedPtrs alive since it uses WeakPtrs! Need this tmp allocation until referenced.
@@ -145,20 +149,25 @@ auto World::dispatch_event(const EventId event) -> void {
 		Array<SharedPtr<Task>> prerequisites;
 
 		const GroupId group = app.system_create_infos[id].desc.group;
+		#if 0
 		app.group_prerequisites[group].for_each([&](const GroupId prerequisite_group) {
 			app.group_systems[prerequisite_group].for_each([&](const SystemId prerequisite_system) {
 				auto prerequisite_task = system_tasks[prerequisite_system].lock();
 				if (prerequisite_task && !prerequisite_task->has_completed()) {
+					fmt::println("{} -> {}", get_type_info(prerequisite_system).name, get_type_info(id).name);
 					prerequisites.push_back(std::move(prerequisite_task));
 				}
 			});
 		});
+		#endif
 
 		app.group_subsequents[group].for_each([&](const GroupId subsequent_group) {
 			app.group_systems[subsequent_group].for_each([&](const SystemId subsequent_system) {
 				auto subsequent_task = system_tasks[subsequent_system].lock();
 				if (subsequent_task && !subsequent_task->has_completed()) {
-					system_tasks[id].lock()->add_subsequent(std::move(subsequent_task));
+					fmt::println("{} -> {}", get_type_info(id).name, get_type_info(subsequent_system).name);
+					const auto result = system_tasks[id].lock()->add_subsequent(std::move(subsequent_task));
+					ASSERT(result == Task::AddSubsequentResult::SUCCESS);
 				}
 			});
 		});
@@ -172,6 +181,7 @@ auto World::dispatch_event(const EventId event) -> void {
 		// Schedule against exclusives.
 		app.concurrent_conflicting_systems[id].for_each([&](const SystemId conflicting_id) {
 			Task::add_exclusive(system_tasks[id].lock(), system_tasks[conflicting_id].lock());
+			fmt::println("{} != {}", get_type_info(id).name, get_type_info(conflicting_id).name);
 		});
 	});
 
@@ -200,34 +210,6 @@ auto World::find_archetype_id(const ArchetypeDesc& desc) const -> Optional<Arche
 }
 
 auto World::find_or_create_archetype_id(const ArchetypeDesc& desc) -> ArchetypeId {
-	#if 0
-	if (const auto found = find_archetype_id(desc)) [[likely]] {
-		return *found;
-	}
-
-	// @NOTE: This branch should be NOINLINE as it should rarely happen.
-	ScopeLock lock{archetypes_mutex};
-
-	// Check again. The archetype could have potentially been created before the exclusive lock was acquired.
-	if (const auto found = find_archetype_id_assumes_locked(desc)) {
-		return *found;
-	}
-
-	ASSERTF(archetypes.size() <= ArchetypeId::max(), "Attempted to create {} archetypes but ArchetypeId::max() == {}!",
-		archetypes.size() + 1, ArchetypeId::max().get_value());
-
-	ArchetypeId out = archetypes.size();
-	archetypes.push_back(std::make_unique<Archetype>(desc));
-
-	archetype_desc_to_id[desc] = out;
-
-	desc.comps.for_each([&](const CompId id) {
-		comp_archetypes_mask[id].add(out);
-	});
-
-	return out;
-	#endif
-
 	return find_or_create_archetype(desc).second;
 }
 

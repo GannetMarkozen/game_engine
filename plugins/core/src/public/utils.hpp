@@ -38,6 +38,11 @@ template <typename T>
 #endif
 }
 
+[[nodiscard]] constexpr auto to_compact_file_name(const StringView file_name) -> StringView {
+	const usize offset = file_name.rfind('/') + 1;
+	return file_name.substr(offset, offset - file_name.size());
+}
+
 namespace impl {
 constexpr StringView TYPE_NAME_REDIRECTS[][2] = {
 	{"std::vector", "Array"},

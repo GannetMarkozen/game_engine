@@ -75,8 +75,6 @@ Archetype::~Archetype() {
 				continue;
 			}
 
-			fmt::println("Destructing {} at {}", type_info.name, static_cast<void*>(chunk.data));
-
 			type_info.destruct(&chunk.data[comp.offset_within_chunk], count);
 		}
 	});
