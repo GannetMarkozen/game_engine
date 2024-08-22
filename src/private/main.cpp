@@ -28,7 +28,7 @@ struct SpawningSystem {
 
 	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements {
 		return {
-			.writes = ecs::CompMask::make<Vec3>(),
+			.reads = ecs::CompMask::make<Vec3>(),
 		};
 	}
 
@@ -43,57 +43,40 @@ struct SpawningSystem {
 
 		ASSERT(&context.world);
 
-#if 01
-		//if constexpr (I == 0)
-		#if 0
-		for (usize i = 0; i < 100; ++i) {
-			const Entity entity = context.world.spawn_entity(
-				Vec3{
-					.x = static_cast<f32>(i),
-					.y = 420,
-					.z = 69,
-				}
-			);
-		}
-		#endif
-
-		//task::parallel_for(100, [&](const usize i) {
-		for (usize i = 0; i < 100; ++i) {
-			if (i % 2 == 0) {
-				context.world.spawn_entity(
+		if constexpr (I == 0) {
+			for (usize i = 0; i < 100; ++i) {
+				const Entity entity = context.world.spawn_entity(
 					Vec3{
 						.x = static_cast<f32>(i),
-						.y = 420.f,
-						.z = 69.f,
-					}
-				);
-			} else {
-				context.world.spawn_entity(
-					Name{
-						.name = fmt::format("Bill {}", i),
+						.y = 69.f,
+						.z = 420.f,
 					}
 				);
 			}
+		} else {
+			usize count = 0;
+			query.for_each(context.world, [&](const Entity& entity, const Vec3& vec) {
+				//context.world.add_comps(entity, Name{.name = "Jill"});
+				context.world.destroy_entity(entity);
+				++count;
+			});
+
+			fmt::println("Num entities == {}", count);
 		}
-		//});
-#elif 0
-		const Entity entity = context.world.spawn_entity(
-				Vec3{
-					.x = 100,
-					.y = 420,
-					.z = 69,
-				}
-			);
-#endif
+	
 
 		//WARN("EXECUTING {}", __PRETTY_FUNCTION__);
 
 		executing_system.store(SystemId::invalid_id());
 	}
+
+	ecs::Query<const Vec3> query{
+		.excludes = ecs::CompMask::make<Name>(),
+	};
 };
 
 struct LoopSystem {
-	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements { return { .writes = ecs::CompMask::make<Vec3>(), }; }
+	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements { return { .reads = ecs::CompMask::make<Vec3, Name>(), }; }
 
 	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
 		//std::this_thread::sleep_for(std::chrono::seconds{2});

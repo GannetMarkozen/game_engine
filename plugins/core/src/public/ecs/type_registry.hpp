@@ -214,7 +214,9 @@ struct TypeMask {
 	}
 
 	FORCEINLINE constexpr auto flip_bits() -> TypeMask& {
+		mask.resize_to_fit(TypeRegistry::get_num_registered_types());
 		mask.flip_bits();
+
 		return *this;
 	}
 

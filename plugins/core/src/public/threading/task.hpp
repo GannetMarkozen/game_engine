@@ -131,11 +131,9 @@ struct Task {
 			return AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED;
 		}
 
-#if 0
 		ASSERTF(!other->subsequents.for_each_with_break([&](const SharedPtr<Task>& subsequent) {
-			return subsequent.get() == this;
-		}), "Attempted to enqueue subsequent task that also has that task as a subsequent! Circular subsequent dependencies!");
-#endif
+			return subsequent.get() != this;
+		}), "Attempted to enqueue subsequent task {} to {} that also has that task as a subsequent! Circular subsequent dependencies!", other->name, name);
 
 		++other->prerequisites_remaining;
 		subsequents.enqueue(std::move(other));

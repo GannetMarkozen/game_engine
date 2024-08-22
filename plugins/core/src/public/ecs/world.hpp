@@ -579,7 +579,7 @@ struct World {
 					auto task = system_tasks[id].lock();
 					if (task) {// First try and schedule out_task before the system task, if that fails then schedule out_task after system_task. Guaranteed order dependance as long as systems are ordered.
 						const auto result = Task::try_add_subsequent_else_add_prerequisite(out_task, task);
-						#if 0
+						#if 01
 						if (result != Task::TryAddSubsequentElsePrerequisiteResult::FAIL) {
 							if (result == Task::TryAddSubsequentElsePrerequisiteResult::ADDED_SUBSEQUENT) {
 								fmt::println("Enqueued before {}", get_type_info(id).name);
@@ -636,13 +636,10 @@ struct World {
 			// First destroy entities.
 			for (const Entity entity : dtors) {
 				const usize index_within_archetype = entities.get_unsafe().get_entity_desc(entity).index_within_archetype;
-				const bool is_last_entity = index_within_archetype + 1 == archetype.num_entities;
-
-				archetype.remove_at(index_within_archetype);
-
-				if (!is_last_entity) {
-					const Entity swapped_entity = archetype.get_entity(index_within_archetype);
-					entities.get_unsafe().get_entity_desc(swapped_entity).index_within_archetype = index_within_archetype;
+				const usize swap_index = archetype.remove_at(index_within_archetype);
+				if (swap_index != index_within_archetype) {
+					EntityDesc& swap_desc = entities.get_unsafe().get_entity_desc(archetype.get_entity(swap_index));
+					swap_desc.index_within_archetype = index_within_archetype;
 				}
 			}
 
@@ -650,9 +647,13 @@ struct World {
 			if (!ctors.empty()) {
 				const usize start = archetype.add_uninitialized_entities(ctors.size());
 
-				// Assign entity indices within chunk.
+				// Initialize EntityDesc.
 				for (usize i = 0; i < ctors.size(); ++i) {
-					entities.get_unsafe().get_entity_desc(ctors[i].entity).index_within_archetype = start + i;
+					EntityDesc& desc = entities.get_unsafe().get_entity_desc(ctors[i].entity);
+					desc.archetype = archetype_id;
+					desc.index_within_archetype = start + i;
+					ASSERT(!desc.pending_archetype_traversal.is_valid());
+					//entities.get_unsafe().get_entity_desc(ctors[i].entity).index_within_archetype = start + i;
 				}
 
 				usize num_already_constructed = 0;
@@ -747,6 +748,8 @@ struct World {
 
 			const auto entities_access = this->entities.write();
 
+			WARN("Traversing {} from {} to {}!", entities.size(), from.description.comps, to.description.comps);
+
 			// Construct components + entities at the new archetype.
 			usize num_constructed = 0;
 			to.for_each_chunk_from_start(start, [&](Archetype::Chunk& chunk, const usize index_within_chunk, const usize count) {
@@ -797,7 +800,11 @@ struct World {
 				const Entity entity = entities[i].entity;
 				EntityDesc& desc = entities_access->get_entity_desc(entity);
 
-				from.remove_at(desc.index_within_archetype);
+				const usize swap_index = from.remove_at(desc.index_within_archetype);
+				if (desc.index_within_archetype != swap_index) {// If this entity was not the last entity in the Archetype. The last entity was swapped in-place. Update it's index_within_archetype value.
+					EntityDesc& swap_desc = entities_access->get_entity_desc(from.get_entity(swap_index));
+					swap_desc.index_within_archetype = desc.index_within_archetype;
+				}
 
 				desc.archetype = to_id;
 				desc.index_within_archetype = start + i;
@@ -850,6 +857,66 @@ struct World {
 		}
 
 		return entity;
+	}
+
+	// Returns false if the entity is pending destruction.
+	template <typename... Comps> requires (sizeof...(Comps) > 0)
+	auto add_comps(const Entity entity, Comps&&... comps) -> bool {
+		const auto entities_access = entities.write();
+		EntityDesc& desc = entities_access->get_entity_desc(entity);
+
+		if (desc.is_pending_destruction) {
+			return false;
+		}
+
+		Archetype& current_archetype = [&] -> auto& {
+			ScopeSharedLock _{archetypes_mutex};
+
+			ASSERTF(desc.is_initialized(), "{} is uninitialized!", entity);
+			return *archetypes[desc.archetype];
+		}();
+
+		const auto add_comps_mask = CompMask::make<std::decay_t<Comps>...>();
+		ASSERTF(!(add_comps_mask & current_archetype.description.comps), "Attempted to add components {} to entity that already has those components!", add_comps_mask & current_archetype.description.comps);
+
+		const auto [archetype, archetype_id] = find_or_create_archetype(ArchetypeDesc{
+			.comps = add_comps_mask | current_archetype.description.comps,
+		});
+
+		desc.pending_archetype_traversal = archetype_id;
+
+		const ArchetypeTraversal archetype_traversal{
+			.from = desc.archetype,
+			.to = archetype_id,
+		};
+
+		PendingEntityConstruction ctor{
+			.entity = entity,
+		};
+
+		(ctor.comps.push_back(Any::make<std::decay_t<Comps>>(std::forward<Comps>(comps))), ...);
+
+		const bool first_enqueued_for_archetype = [&] {
+			const auto access = pending_entity_archetype_traversal.lock();
+
+			const auto [it, inserted] = access->try_emplace(archetype_traversal);
+			ASSERT(it != access->end());
+
+			it->second.push_back(std::move(ctor));
+
+			return inserted;
+		}();
+
+		if (first_enqueued_for_archetype) {
+			enqueue_archetype_traversal_mod_task(current_archetype, desc.archetype, archetype, archetype_id);
+		}
+
+		return true;
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0)
+	auto remove_comps(const Entity entity) -> void {
+		
 	}
 
 	auto destroy_entity(const Entity entity) -> void {

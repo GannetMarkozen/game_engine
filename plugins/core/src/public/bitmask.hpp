@@ -63,7 +63,7 @@ struct BitMask {
 		}
 
 		const usize new_num_words = math::divide_and_round_up(min_count, BITS_PER_WORD);
-		if (new_num_words > math::divide_and_round_up(count, BITS_PER_WORD)) [[unlikely]] {
+		if (new_num_words > words.size()) [[unlikely]] {
 			words.resize(new_num_words);// Should default to 0s.
 		}
 
@@ -93,7 +93,7 @@ struct BitMask {
 	}
 
 	constexpr auto flip_bits() -> BitMask& {
-		for (Word& word : words) {
+		for (Word& RESTRICT word : words) {
 			word = ~word;
 		}
 
@@ -155,7 +155,6 @@ struct BitMask {
 		return value.flip_bits();
 	}
 
-private:
 	Array<Word, Allocator> words;
 	usize count;
 };

@@ -7,7 +7,7 @@ template <typename... Comps> requires (!std::is_empty_v<Comps> && ...)
 struct Query {
 	FORCEINLINE auto for_each_view(const World& world, ::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn) -> void {
 		{
-			ScopeSharedLock lock{world.archetypes_mutex};
+			ScopeSharedLock _{world.archetypes_mutex};
 
 			if (previous_archetype_count != world.archetypes.size()) [[unlikely]] {
 				update_matching_archetypes_assumes_locked(world);
@@ -28,7 +28,7 @@ struct Query {
 	}
 
 	NOINLINE inline auto update_matching_archetypes_assumes_locked(const World& world) -> void {
-		ASSERT(previous_archetype_count < world.archetypes.size());
+		ASSERT(previous_archetype_count == std::numeric_limits<usize>::max() || previous_archetype_count < world.archetypes.size());
 
 		matching_archetypes.clear();
 
@@ -45,12 +45,28 @@ struct Query {
 		});
 
 		excludes.for_each([&](const CompId id) {
-			matching_archetypes_mask &= ~world.comp_archetypes_mask[id];
+			// Must resize the mask to max size before flipping bits in this case.
+			// @TODO: operator~ should somehow just handle this.
+			ArchetypeMask mask = world.comp_archetypes_mask[id];
+			mask.mask.resize_to_fit(world.archetypes.size());
+			mask.flip_bits();
+			mask.mask.words.back() &= std::numeric_limits<u64>::max() >> (world.archetypes.size() % 64);
+
+			matching_archetypes_mask &= mask;
 		});
 
 		matching_archetypes_mask.for_each([&](const ArchetypeId id) {
 			matching_archetypes.push_back(world.archetypes[id].get());
 		});
+
+		//WARN("Matches with {}. Size == {}", world.archetypes[id]->description.comps, world.archetypes.size());
+		WARN("Updated! Matching against {} ({}).", [&] {
+			String out;
+			for (const auto* archetype : matching_archetypes) {
+				out += fmt::format("{}, ", archetype->description.comps);
+			}
+			return out;
+		}(), matching_archetypes.size());
 
 		previous_archetype_count = world.archetypes.size();
 	}
@@ -74,7 +90,7 @@ struct Query {
 	const CompMask includes;
 	const CompMask excludes;
 	Array<Archetype*> matching_archetypes;
-	usize previous_archetype_count = 0;
+	usize previous_archetype_count = std::numeric_limits<usize>::max();
 };
 }
 

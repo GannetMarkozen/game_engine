@@ -19,7 +19,7 @@ World::World(const App& app)
 auto World::run() -> void {
 	ASSERT(thread::is_in_main_thread());
 
-	dispatch_event<event::OnInit>();
+	dispatch_event<event::OnInit>(); 
 
 	task::do_work_until_all_tasks_complete([&] { return is_pending_destruction; });
 }
