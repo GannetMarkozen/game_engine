@@ -19,6 +19,10 @@ struct Name {
 	String name;
 };
 
+struct Health {
+	f32 value = 100.f;
+};
+
 template <usize I>
 struct Group {};
 
@@ -56,8 +60,9 @@ struct SpawningSystem {
 		} else {
 			usize count = 0;
 			query.for_each(context.world, [&](const Entity& entity, const Vec3& vec) {
-				//context.world.add_comps(entity, Name{.name = "Jill"});
-				context.world.destroy_entity(entity);
+				context.add_comps(entity, Name{.name = count % 2 == 0 ? "Jill" : "Bob"});
+				context.add_comps(entity, Name{.name = "New"}, Health{.value = 99.f});
+				//context.world.destroy_entity(entity);
 				++count;
 			});
 
@@ -94,13 +99,15 @@ struct LoopSystem {
 		} else {
 			usize count_1 = 0;
 			usize count_2 = 0;
+			#if 0
 			query.for_each(context.world, [&](const Entity& entity, const Vec3& vec) {
 				fmt::println("{}: {{{} {} {}}}", entity, vec.x, vec.y, vec.z);
 				++count_1;
 			});
+			#endif
 
-			other_query.for_each(context.world, [&](const Entity& entity, const Name& name) {
-				fmt::println("{}: {}", entity, name.name);
+			other_query.for_each(context.world, [&](const Entity& entity, const Vec3& vec, const Name& name) {
+				fmt::println("{}: {{{} {} {}}}, {}", entity, vec.x, vec.y, vec.z, name.name);
 				++count_2;
 			});
 
@@ -114,7 +121,7 @@ struct LoopSystem {
 
 	usize count = 0;
 	ecs::Query<const Vec3> query;
-	ecs::Query<const Name> other_query;
+	ecs::Query<const Vec3, const Name> other_query;
 };
 
 template <usize I>

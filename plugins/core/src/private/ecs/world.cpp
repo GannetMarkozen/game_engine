@@ -126,12 +126,6 @@ auto World::dispatch_event(const EventId event) -> void {
 
 			systems[id]->execute(context);
 
-			// Execute deferred actions.
-			Optional<ExecContext::DeferredFn> deferred;
-			while ((deferred = context.deferred_actions.dequeue())) {
-				(*deferred)(context);
-			}
-
 			// No need for a lock here. Clearing a system can't cause race-conditions.
 			executing_systems.mask[id.get_value()].atomic_set(false);
 		}, desc.priority, desc.thread, {}
@@ -221,19 +215,19 @@ auto World::find_archetype_assumes_locked(const ArchetypeDesc& desc) const -> Op
 	}
 }
 
-auto World::find_archetype(const ArchetypeDesc& desc) const -> Optional<Pair<Archetype&, ArchetypeId>> {
-	ScopeSharedLock lock{archetypes_mutex};
+auto World::find_archetype(const ArchetypeDesc& desc, const bool assumes_locked) const -> Optional<Pair<Archetype&, ArchetypeId>> {
+	UniqueSharedLock _{assumes_locked ? null : &archetypes_mutex};
 	return find_archetype_assumes_locked(desc);
 }
 
 // @NOTE: Copied, so bad.
-auto World::find_or_create_archetype(const ArchetypeDesc& desc) -> Pair<Archetype&, ArchetypeId> {
-	if (auto pair = find_archetype(desc)) {
+auto World::find_or_create_archetype(const ArchetypeDesc& desc, const bool assumes_write_locked) -> Pair<Archetype&, ArchetypeId> {
+	if (auto pair = find_archetype(desc, assumes_write_locked)) {
 		return *pair;
 	}
 
 	// @NOTE: This branch should be NOINLINE as it should rarely happen.
-	ScopeLock lock{archetypes_mutex};
+	UniqueExclusiveLock _{assumes_write_locked ? null : &archetypes_mutex};
 
 	// Check again. The archetype could have potentially been created before the exclusive lock was acquired.
 	if (auto pair = find_archetype_assumes_locked(desc)) {

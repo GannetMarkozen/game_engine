@@ -109,6 +109,14 @@ static_assert(false, "No C++ attributes!");
 // Helper macro to perfectly forward an auto&& type (annoying it has to be a macro).
 #define FORWARD_AUTO(value) std::forward<decltype(value)>(value)
 
+#define PREPROCESSOR_JOIN_INNER(A, B) A##B
+#define PREPROCESSOR_JOIN(A, B) PREPROCESSOR_JOIN_INNER(A, B)
+
+#define ANONYMOUS PREPROCESSOR_JOIN(ANON_, __COUNTER__)
+
+// Placeholder variables come in C++26. Not gonna wait.
+#define _ ANONYMOUS
+
 #define null nullptr
 
 using i8 = int8_t;

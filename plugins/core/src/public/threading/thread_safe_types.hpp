@@ -693,6 +693,88 @@ private:
 	mutable SharedMutexType mutex;
 };
 
+// Acquires multiple locks at once with dead-lock avoidance algorithm. Must use a form of UniqueLock. Returns a tuple of UniqueLocks.
+template <template <cpts::Mutex> typename... Locks, cpts::Mutex... Mutexes>
+[[nodiscard]] auto lock_multi(Mutexes&... mutexes) -> Tuple<Locks<Mutexes>...> {
+	Tuple<Optional<Locks<Mutexes>>...> locks;
+	usize first_try_lock_index = 0;
+
+	usize retries = 0;
+	while (![&] -> bool {
+		[&]<usize I>(this auto&& self) -> void {
+			if constexpr (I < sizeof...(Locks)) {
+				if (first_try_lock_index == I) {
+					std::get<I>(locks).emplace(*std::get<I>(utils::make_tuple(&mutexes...)));
+				} else {
+					self.template operator()<I + 1>();
+				}
+			}
+		}.template operator()<0>();
+
+		for (usize i = 0; i < first_try_lock_index; ++i) {
+			const bool result = [&]<usize I>(this auto&& self) -> bool {
+				if constexpr (I < sizeof...(Locks)) {
+					if (i == I) {
+						if (auto result = utils::TypeAtIndex<I, Locks<Mutexes>...>::from_try_lock(*std::get<I>(utils::make_tuple(&mutexes...)))) {
+							std::get<I>(locks).emplace(std::move(*result));
+							return true;
+						} else {
+							first_try_lock_index = i;
+							return false;
+						}
+					} else {
+						return self.template operator()<I + 1>();
+					}
+				}
+
+				ASSERT_UNREACHABLE;
+			}.template operator()<0>();
+
+			if (!result) {
+				return false;
+			}
+		}
+
+		for (usize i = first_try_lock_index + 1; i < sizeof...(Locks); ++i) {
+			const bool result = [&]<usize I>(this auto&& self) -> bool {
+				if constexpr (I < sizeof...(Locks)) {
+					if (i == I) {
+						if (auto result = utils::TypeAtIndex<I, Locks<Mutexes>...>::from_try_lock(*std::get<I>(utils::make_tuple(&mutexes...)))) {
+							std::get<I>(locks).emplace(std::move(*result));
+							return true;
+						} else {
+							first_try_lock_index = i;
+							return false;
+						}
+					} else {
+						return self.template operator()<I + 1>();
+					}
+				}
+
+				ASSERT_UNREACHABLE;
+			}.template operator()<0>();
+
+			if (!result) {
+				return false;
+			}
+		}
+
+		return true;
+	}()) {
+		// Unlock all.
+		utils::make_index_sequence_param_pack<sizeof...(Locks)>([&]<usize... Is>() {
+			(std::get<Is>(locks).reset(), ...);
+		});
+
+		// Exponential yield.
+		thread::exponential_yield(retries);
+	}
+
+	return utils::make_index_sequence_param_pack<sizeof...(Locks)>([&]<usize... Is>() {
+		return utils::make_tuple(std::move(*std::get<Is>(locks))...);
+	});
+}
+
 enum class AtomicAcquisitionResult : u8 {
 	FOUND, ENQUEUED
 };

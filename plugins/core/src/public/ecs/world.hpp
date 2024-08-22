@@ -4,6 +4,7 @@
 #include "archetype.hpp"
 #include "threading/thread_safe_types.hpp"
 #include "threading/task.hpp"
+#include <algorithm>
 #include <variant>
 
 namespace ecs {
@@ -218,20 +219,6 @@ struct EntityList {
 	u32 next_available_index = 0;
 };
 
-struct ExecContext {
-	using DeferredFn = Fn<void(const ExecContext&)>;
-
-	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
-	auto spawn_entity(Comps&&... comps) -> Entity;
-
-
-	World& [[clang::lifetimebound]] world;
-	const f32 delta_time;
-	const SystemId currently_executing_system;
-	const std::thread::id currently_executing_system_thread;
-	MpscQueue<DeferredFn> deferred_actions;
-};
-
 // @TODO: Archetype construction, deferred entity initialization, observers, resources, system "activation".
 struct World {
 	NON_COPYABLE(World);
@@ -254,8 +241,8 @@ struct World {
 	[[nodiscard]] auto find_or_create_archetype_id(const ArchetypeDesc& desc) -> ArchetypeId;// Thread-safe. Locks.
 
 	[[nodiscard]] auto find_archetype_assumes_locked(const ArchetypeDesc& desc) const -> Optional<Pair<Archetype&, ArchetypeId>>;
-	[[nodiscard]] auto find_archetype(const ArchetypeDesc& desc) const -> Optional<Pair<Archetype&, ArchetypeId>>;
-	[[nodiscard]] auto find_or_create_archetype(const ArchetypeDesc& desc) -> Pair<Archetype&, ArchetypeId>;
+	[[nodiscard]] auto find_archetype(const ArchetypeDesc& desc, const bool assumes_locked = false) const -> Optional<Pair<Archetype&, ArchetypeId>>;
+	[[nodiscard]] auto find_or_create_archetype(const ArchetypeDesc& desc, const bool assumes_write_locked = false) -> Pair<Archetype&, ArchetypeId>;
 
 #if 0
 	auto internal_spawn_entities(const ArchetypeDesc& desc, const usize count, ::cpts::Invokable<const Array<Entity>&, Archetype&, usize> auto&& on_construction_fn, Array<Entity>* optional_out_entities = null,
@@ -721,6 +708,12 @@ struct World {
 				return out;
 			}();
 
+			// This can happen if you first attempt to traverse the archetype of an Entity then
+			// destroy it - invalidating it.
+			if (entities.empty()) [[unlikely]] {
+				return;
+			}
+
 			const usize start = to.add_uninitialized_entities(entities.size());
 
 			// Comps that need to be moved from one archetype to the other.
@@ -765,9 +758,11 @@ struct World {
 						const usize entity_index_within_archetype = entities_access->get_entity_desc(entity).index_within_archetype;
 
 						void* dst = &chunk.data[to_offsets_within_chunk[comp_index] + (index_within_chunk + i) * type_info.size];
-						void* src = &from.get_chunk(entity_index_within_archetype / from.num_entities_per_chunk).data[from_offsets_within_chunk[comp_index] + ((entity_index_within_archetype % from.num_entities_per_chunk) + i) * type_info.size];
+						void* src = &from.get_chunk(entity_index_within_archetype / from.num_entities_per_chunk).data[from_offsets_within_chunk[comp_index] + (entity_index_within_archetype % from.num_entities_per_chunk) * type_info.size];
 
 						type_info.move_construct(dst, src, 1);
+
+						++comp_index;
 					});
 
 					// Add components (if there are any).
@@ -859,9 +854,11 @@ struct World {
 		return entity;
 	}
 
+#if 0
 	// Returns false if the entity is pending destruction.
 	template <typename... Comps> requires (sizeof...(Comps) > 0)
 	auto add_comps(const Entity entity, Comps&&... comps) -> bool {
+		#if 0
 		const auto entities_access = entities.write();
 		EntityDesc& desc = entities_access->get_entity_desc(entity);
 
@@ -875,10 +872,21 @@ struct World {
 			ASSERTF(desc.is_initialized(), "{} is uninitialized!", entity);
 			return *archetypes[desc.archetype];
 		}();
+		#endif
+
+		auto [_, archetypes_lock] = lock_multi<UniqueExclusiveLock, UniqueSharedLock>(entities.get_mutex(), archetypes_mutex);
+		EntityDesc& desc = entities.get_unsafe().get_entity_desc(entity);
+
+		ASSERTF(desc.is_initialized(), "{} is uninitialized!", entity);
+
+		Archetype& current_archetype = *archetypes[desc.archetype];
+
+		archetypes_lock.unlock();// No longer need this.
 
 		const auto add_comps_mask = CompMask::make<std::decay_t<Comps>...>();
 		ASSERTF(!(add_comps_mask & current_archetype.description.comps), "Attempted to add components {} to entity that already has those components!", add_comps_mask & current_archetype.description.comps);
 
+		// @TODO: Deadlock potential here. Need an assumes_locked variation of this.
 		const auto [archetype, archetype_id] = find_or_create_archetype(ArchetypeDesc{
 			.comps = add_comps_mask | current_archetype.description.comps,
 		});
@@ -913,18 +921,87 @@ struct World {
 
 		return true;
 	}
+#endif
 
-	template <typename... Comps> requires (sizeof...(Comps) > 0)
-	auto remove_comps(const Entity entity) -> void {
-		
+	// Batched add / remove components from entity.
+	auto modify_entity(const Entity entity, const CompMask& add_comps_mask, const CompMask& remove_comps_mask, Array<Any> add_comps, const std::source_location& source_location = std::source_location::current()) -> bool {
+		ASSERTF(std::ranges::find_if(add_comps, [&](const Any& value) { return !value.has_value(); }) == add_comps.end(), "All comps must be initialized!");
+
+		auto [archetypes_lock, pending_archetype_traversal_lock, _, _] =
+			lock_multi<UniqueSharedLock, UniqueLock, UniqueExclusiveLock, UniqueSharedLock>(
+			archetypes_mutex, pending_entity_archetype_traversal.get_mutex(), entities.get_mutex(), system_tasks_mutex);
+
+		EntityDesc& desc = entities.get_unsafe().get_entity_desc(entity);
+		if (desc.is_pending_destruction) {// Destruction takes priority.
+			return false;
+		}
+
+		const CompMask composition = (archetypes[desc.pending_archetype_traversal.is_valid() ? desc.pending_archetype_traversal : desc.archetype]->description.comps | add_comps_mask) & ~remove_comps_mask;
+
+		Archetype& current_archetype = *archetypes[desc.archetype];
+		const auto [new_archetype, new_archetype_id] = find_or_create_archetype(ArchetypeDesc{
+			.comps = composition,
+		}, true);
+
+		archetypes_lock.unlock();// No longer needed.
+
+		PendingEntityConstruction ctor{
+			.entity = entity,
+			.comps = std::move(add_comps),
+		};
+
+		// Entity has a pending archetype change. Move values into this archetype instead.
+		if (desc.pending_archetype_traversal.is_valid()) {
+			const auto it = pending_entity_archetype_traversal.get_unsafe().find(ArchetypeTraversal{
+				.from = desc.archetype,
+				.to = desc.pending_archetype_traversal,
+			});
+			ASSERT(it != pending_entity_archetype_traversal.get_unsafe().end());
+
+			const auto found = std::ranges::find(it->second, entity, &PendingEntityConstruction::entity);
+			ASSERT(found != it->second.end());
+
+			ctor.comps.reserve(ctor.comps.size() + found->comps.size());
+			for (Any& comp : found->comps) {// Take added components. Ignore duplicates.
+				if (!std::ranges::contains(ctor.comps, comp.get_type(), &Any::get_type)) {
+					ctor.comps.push_back(std::move(comp));
+				}
+			}
+
+			it->second.erase(found);
+		}
+
+		desc.pending_archetype_traversal = new_archetype_id;
+
+		const ArchetypeTraversal archetype_traversal{
+			.from = desc.archetype,
+			.to = new_archetype_id,
+		};
+
+		const auto [it, inserted] = pending_entity_archetype_traversal.get_unsafe().try_emplace(ArchetypeTraversal{
+			.from = desc.archetype,
+			.to = new_archetype_id,
+		});
+		ASSERT(it != pending_entity_archetype_traversal.get_unsafe().end());
+
+		it->second.push_back(std::move(ctor));
+
+		if (inserted) {
+			enqueue_archetype_traversal_mod_task<true>(current_archetype, desc.archetype, new_archetype, new_archetype_id, Priority::HIGH, Thread::ANY, source_location);
+		}
+
+		return true;
 	}
 
-	auto destroy_entity(const Entity entity) -> void {
-		const ArchetypeId archetype_id = [&] {
+	auto destroy_entity(const Entity entity) -> bool {
+		const auto result = [&] -> Optional<ArchetypeId> {
 			auto entities_access = entities.write();
 			entities_access->assert_is_entity_valid(entity);
 
 			EntityDesc& desc = entities_access->get_entity_desc(entity);
+			if (desc.is_pending_destruction) {// Already pending destruction. Don't double-destroy.
+				return NULL_OPTIONAL;
+			}
 
 			desc.is_pending_destruction = true;// Mark for destruction.
 
@@ -947,6 +1024,12 @@ struct World {
 			return desc.archetype;
 		}();
 
+		if (!result) {
+			return false;
+		}
+
+		const ArchetypeId archetype_id = *result;
+
 		const bool first_inserted_for_archetype = [&] {
 			const auto ctor_dtor_access = pending_entity_ctor_dtor.lock();
 
@@ -968,6 +1051,8 @@ struct World {
 
 			enqueue_archetype_ctor_dtor_mod_task(archetype, archetype_id);
 		}
+
+		return true;
 	}
 
 	[[nodiscard]] FORCEINLINE auto reserve_entity() -> Entity {
@@ -1023,8 +1108,44 @@ private:
 	[[nodiscard]] auto get_system_access_requirements(const SystemId id) const -> const AccessRequirements&;
 };
 
-template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
-FORCEINLINE auto ExecContext::spawn_entity(Comps&&... comps) -> Entity {
-	return world.spawn_entity(*this, std::forward<Comps>(comps)...);
-}
+struct ExecContext {
+	using DeferredFn = Fn<void(const ExecContext&)>;
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
+	auto spawn_entity(Comps&&... comps) const -> Entity {
+		return world.spawn_entity(*this, std::forward<Comps>(comps)...);
+	}
+
+	auto destroy_entity(const Entity entity) const -> void {
+		world.destroy_entity(entity);
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0)
+	auto add_comps(const Entity entity, Comps&&... comps) const -> bool {
+		Array<Any> anys;
+		anys.reserve(sizeof...(Comps));
+		(anys.push_back(Any::make<std::decay_t<Comps>>(std::forward<Comps>(comps))), ...);
+
+		return world.modify_entity(entity, CompMask::make<std::decay_t<Comps>...>(), {}, std::move(anys));
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0)
+	auto remove_comps(const Entity entity) const -> bool {
+		return world.modify_entity(entity, {}, CompMask::make<Comps...>(), {});
+	}
+
+	template <typename... RemoveComps, typename... AddComps> requires (sizeof...(RemoveComps) > 0 && sizeof...(AddComps) > 0)
+	auto add_and_remove_comps(const Entity entity, AddComps&&... add_comps) const -> bool {
+		Array<Any> anys;
+		anys.reserve(sizeof...(AddComps));
+		(anys.push_back(Any::make<std::decay_t<AddComps>>(std::forward<AddComps>(add_comps))), ...);
+
+		return world.modify_entity(entity, CompMask::make<std::decay_t<AddComps>...>(), CompMask::make<RemoveComps...>(), std::move(anys));
+	}
+
+	World& [[clang::lifetimebound]] world;
+	const f32 delta_time;
+	const SystemId currently_executing_system;
+	const std::thread::id currently_executing_system_thread;
+};
 }

@@ -301,9 +301,9 @@ struct EXPORT_API Archetype {
 
 	// Implements swap. Will not retain order (don't think we need that).
 	auto remove_at(const usize index, usize count = 1) -> usize {
-		ASSERTF(count <= num_entities, "Attempted to remove {} entities from size of {}!", count, num_entities);
-		ASSERTF(index < num_entities, "Attempted to remove index {} from size {}!", index, num_entities);
-		ASSERTF((index + count) <= num_entities, "Attempted to remove entities {} through {} of size {}!", index, index + count, num_entities);
+		ASSERTF(count <= num_entities, "Attempted to remove {} entities from size of {} for archetype {}!", count, num_entities, description.comps);
+		ASSERTF(index < num_entities, "Attempted to remove index {} from size {} for archetype {}!", index, num_entities, description.comps);
+		ASSERTF((index + count) <= num_entities, "Attempted to remove entities {} through {} of size {} for archetype {}!", index, index + count, num_entities, description.comps);
 
 		const usize num_from_end = num_entities - (index + count);
 		const usize no_swap_count = count - std::min(count, num_from_end);
