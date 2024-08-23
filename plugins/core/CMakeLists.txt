@@ -32,10 +32,17 @@ FetchContent_Declare(
 	GIT_REPOSITORY https://github.com/cameron314/concurrentqueue
 	GIT_TAG v1.0.4
 )
+FetchContent_Declare(
+    glm
+    GIT_REPOSITORY https://github.com/g-truc/glm.git
+    GIT_TAG bf71a834948186f4097caa076cd2663c69a10e1e #refs/tags/1.0.1
+)
 FetchContent_MakeAvailable(fmt)
 FetchContent_MakeAvailable(concurrentqueue)
+FetchContent_MakeAvailable(glm)
 
 target_link_libraries(core
 	PUBLIC fmt::fmt
 	PUBLIC concurrentqueue
+	PUBLIC glm::glm
 )

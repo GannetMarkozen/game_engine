@@ -9,11 +9,9 @@
 #include "utils.hpp"
 #include "ecs/query.hpp"
 
-Atomic<ecs::SystemId> executing_system = ecs::SystemId::invalid_id();
+#include "linalg.hpp"
 
-struct Vec3 {
-	f32 x, y, z;
-};
+Atomic<ecs::SystemId> executing_system = ecs::SystemId::invalid_id();
 
 struct Name {
 	String name;
@@ -47,14 +45,12 @@ struct SpawningSystem {
 
 		ASSERT(&context.world);
 
+		static constexpr auto THING = alignof(Quat);
+
 		if constexpr (I == 0) {
 			for (usize i = 0; i < 100; ++i) {
 				const Entity entity = context.world.spawn_entity(
-					Vec3{
-						.x = static_cast<f32>(i),
-						.y = 69.f,
-						.z = 420.f,
-					}
+					Vec3{static_cast<f32>(i), 69.f, 420.f}
 				);
 			}
 		} else {
@@ -68,7 +64,6 @@ struct SpawningSystem {
 
 			fmt::println("Num entities == {}", count);
 		}
-	
 
 		//WARN("EXECUTING {}", __PRETTY_FUNCTION__);
 
@@ -151,6 +146,8 @@ auto main() -> int {
 
 	auto app = App::build();
 
+	//app.register_plugin(VkPlugin{});
+
 	const auto register_system = [&]<usize I>() {
 		if constexpr (I == 0) {
 			app.register_group<SomeGroup<I>>();
@@ -199,5 +196,4 @@ auto main() -> int {
 		});
 #endif
 		app.run();
-		//.run();
 }

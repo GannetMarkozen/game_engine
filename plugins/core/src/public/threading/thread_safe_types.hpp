@@ -693,7 +693,8 @@ private:
 	mutable SharedMutexType mutex;
 };
 
-// Acquires multiple locks at once with dead-lock avoidance algorithm. Must use a form of UniqueLock. Returns a tuple of UniqueLocks.
+// Acquires multiple locks at once with dead-lock avoidance algorithm. Must use a form of UniqueLock. Returns a tuple of UniqueLocks.]
+// @TODO: Make this logic less cursed.
 template <template <cpts::Mutex> typename... Locks, cpts::Mutex... Mutexes>
 [[nodiscard]] auto lock_multi(Mutexes&... mutexes) -> Tuple<Locks<Mutexes>...> {
 	Tuple<Optional<Locks<Mutexes>>...> locks;

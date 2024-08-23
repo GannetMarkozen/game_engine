@@ -588,7 +588,7 @@ struct World {
 	}
 
 	template <bool ASSUMES_LOCKED = false>
-	auto enqueue_archetype_ctor_dtor_mod_task(Archetype& archetype, const ArchetypeId archetype_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
+	auto enqueue_entity_ctor_dtor_task(Archetype& archetype, const ArchetypeId archetype_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
 		const Archetype* archetype_ptr = &archetype;// Need a memory address to create a span.
 		return enqueue_archetype_mod_task<ASSUMES_LOCKED>([this, &archetype, archetype_id](const SharedPtr<Task>& this_task) {
 			UniqueLock<Mutex> l1{null};
@@ -683,7 +683,7 @@ struct World {
 	}
 
 	template <bool ASSUMES_LOCKED = false>
-	auto enqueue_archetype_traversal_mod_task(Archetype& from, const ArchetypeId from_id, Archetype& to, const ArchetypeId to_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
+	auto enqueue_entity_archetype_traversal_task(Archetype& from, const ArchetypeId from_id, Archetype& to, const ArchetypeId to_id, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY, const std::source_location& source_location = std::source_location::current()) -> SharedPtr<Task> {
 		ASSERT(&from);
 		ASSERT(from_id.is_valid());
 		ASSERT(&to);
@@ -848,85 +848,18 @@ struct World {
 
 		// Enqueue the task that will handle constructing the entities.
 		if (first_inserted_for_archetype) {
-			enqueue_archetype_ctor_dtor_mod_task(archetype, archetype_id);
+			enqueue_entity_ctor_dtor_task(archetype, archetype_id);
 		}
 
 		return entity;
 	}
 
-#if 0
-	// Returns false if the entity is pending destruction.
-	template <typename... Comps> requires (sizeof...(Comps) > 0)
-	auto add_comps(const Entity entity, Comps&&... comps) -> bool {
-		#if 0
-		const auto entities_access = entities.write();
-		EntityDesc& desc = entities_access->get_entity_desc(entity);
-
-		if (desc.is_pending_destruction) {
-			return false;
-		}
-
-		Archetype& current_archetype = [&] -> auto& {
-			ScopeSharedLock _{archetypes_mutex};
-
-			ASSERTF(desc.is_initialized(), "{} is uninitialized!", entity);
-			return *archetypes[desc.archetype];
-		}();
-		#endif
-
-		auto [_, archetypes_lock] = lock_multi<UniqueExclusiveLock, UniqueSharedLock>(entities.get_mutex(), archetypes_mutex);
-		EntityDesc& desc = entities.get_unsafe().get_entity_desc(entity);
-
-		ASSERTF(desc.is_initialized(), "{} is uninitialized!", entity);
-
-		Archetype& current_archetype = *archetypes[desc.archetype];
-
-		archetypes_lock.unlock();// No longer need this.
-
-		const auto add_comps_mask = CompMask::make<std::decay_t<Comps>...>();
-		ASSERTF(!(add_comps_mask & current_archetype.description.comps), "Attempted to add components {} to entity that already has those components!", add_comps_mask & current_archetype.description.comps);
-
-		// @TODO: Deadlock potential here. Need an assumes_locked variation of this.
-		const auto [archetype, archetype_id] = find_or_create_archetype(ArchetypeDesc{
-			.comps = add_comps_mask | current_archetype.description.comps,
-		});
-
-		desc.pending_archetype_traversal = archetype_id;
-
-		const ArchetypeTraversal archetype_traversal{
-			.from = desc.archetype,
-			.to = archetype_id,
-		};
-
-		PendingEntityConstruction ctor{
-			.entity = entity,
-		};
-
-		(ctor.comps.push_back(Any::make<std::decay_t<Comps>>(std::forward<Comps>(comps))), ...);
-
-		const bool first_enqueued_for_archetype = [&] {
-			const auto access = pending_entity_archetype_traversal.lock();
-
-			const auto [it, inserted] = access->try_emplace(archetype_traversal);
-			ASSERT(it != access->end());
-
-			it->second.push_back(std::move(ctor));
-
-			return inserted;
-		}();
-
-		if (first_enqueued_for_archetype) {
-			enqueue_archetype_traversal_mod_task(current_archetype, desc.archetype, archetype, archetype_id);
-		}
-
-		return true;
-	}
-#endif
-
-	// Batched add / remove components from entity.
+	// Batched add / remove components for entity.
 	auto modify_entity(const Entity entity, const CompMask& add_comps_mask, const CompMask& remove_comps_mask, Array<Any> add_comps, const std::source_location& source_location = std::source_location::current()) -> bool {
-		ASSERTF(std::ranges::find_if(add_comps, [&](const Any& value) { return !value.has_value(); }) == add_comps.end(), "All comps must be initialized!");
+		ASSERTF(!std::ranges::contains(add_comps, false, &Any::has_value), "All comps must be initialized!");
 
+		// Acquire all required locks.
+		// @NOTE: Sorta bad acquiring all of these locks.
 		auto [archetypes_lock, pending_archetype_traversal_lock, _, _] =
 			lock_multi<UniqueSharedLock, UniqueLock, UniqueExclusiveLock, UniqueSharedLock>(
 			archetypes_mutex, pending_entity_archetype_traversal.get_mutex(), entities.get_mutex(), system_tasks_mutex);
@@ -987,7 +920,7 @@ struct World {
 		it->second.push_back(std::move(ctor));
 
 		if (inserted) {
-			enqueue_archetype_traversal_mod_task<true>(current_archetype, desc.archetype, new_archetype, new_archetype_id, Priority::HIGH, Thread::ANY, source_location);
+			enqueue_entity_archetype_traversal_task<true>(current_archetype, desc.archetype, new_archetype, new_archetype_id, Priority::HIGH, Thread::ANY, source_location);
 		}
 
 		return true;
@@ -1049,7 +982,7 @@ struct World {
 				return *archetypes[archetype_id];
 			}();
 
-			enqueue_archetype_ctor_dtor_mod_task(archetype, archetype_id);
+			enqueue_entity_ctor_dtor_task(archetype, archetype_id);
 		}
 
 		return true;

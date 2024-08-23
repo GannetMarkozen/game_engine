@@ -8,6 +8,7 @@
 #include "concepts.hpp"
 
 namespace ecs {
+// @TODO: Use lazy-initialization instead of global-initialization to avoid some weird edge-cases.
 template <cpts::IntAlias IdType>
 struct TypeRegistry {
 	EXPORT_API inline static Array<const rtti::TypeInfo*> TYPE_INFOS;

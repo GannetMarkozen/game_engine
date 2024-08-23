@@ -24,21 +24,8 @@ App::App() {
 }
 
 auto App::run(const usize num_worker_threads) -> void {
-	ASSERTF(!~registered_groups, "Groups {} are implicitly instantiated but are not registered!", [&] {
-		String out;
-		(~registered_groups).for_each([&](const GroupId id) {
-			out += fmt::format("{}, ", TypeRegistry<GroupId>::get_type_info(id).name);
-		});
-		return out;
-	}());
-
-	ASSERTF(!~registered_systems, "Systems {} are implicitly instantiated but are not registered!", [&] {
-		String out;
-		(~registered_systems).for_each([&](const SystemId id) {
-			out += fmt::format("{}, ", TypeRegistry<SystemId>::get_type_info(id).name);
-		});
-		return out;
-	}());
+	ASSERTF(!~registered_groups, "Groups {} are implicitly instantiated but are not registered!", ~registered_groups);
+	ASSERTF(!~registered_systems, "Systems {} are implicitly instantiated but are not registered!", ~registered_systems);
 
 	// Initialize nested group ordering as subsequents / prerequisites.
 	for (GroupId id = 0; id < get_num_groups(); ++id) {
