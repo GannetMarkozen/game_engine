@@ -5146,17 +5146,17 @@ struct DispatchTable {
 #endif
 #if (defined(VK_NV_low_latency2))
     VkResult setLatencySleepModeNV(VkSwapchainKHR swapchain, const VkLatencySleepModeInfoNV* pSleepModeInfo) const noexcept {
-        return fp_vkSetLatencySleepModeNV(device, swapchain, pSleepModeInfo);
+        return fp_vkSetLatencySleepModeNV(device, swapchain, const_cast<VkLatencySleepModeInfoNV*>(pSleepModeInfo));// @MODIFIED
     }
 #endif
 #if (defined(VK_NV_low_latency2))
     VkResult latencySleepNV(VkSwapchainKHR swapchain, const VkLatencySleepInfoNV* pSleepInfo) const noexcept {
-        return fp_vkLatencySleepNV(device, swapchain, pSleepInfo);
+        return fp_vkLatencySleepNV(device, swapchain, const_cast<VkLatencySleepInfoNV*>(pSleepInfo));// @MODIFIED
     }
 #endif
 #if (defined(VK_NV_low_latency2))
     void setLatencyMarkerNV(VkSwapchainKHR swapchain, const VkSetLatencyMarkerInfoNV* pLatencyMarkerInfo) const noexcept {
-        fp_vkSetLatencyMarkerNV(device, swapchain, pLatencyMarkerInfo);
+        fp_vkSetLatencyMarkerNV(device, swapchain, const_cast<VkSetLatencyMarkerInfoNV*>(pLatencyMarkerInfo));// @MODIFIED
     }
 #endif
 #if ((defined(VK_NV_low_latency2))) && VK_HEADER_VERSION >= 271
@@ -5166,7 +5166,7 @@ struct DispatchTable {
 #endif
 #if (defined(VK_NV_low_latency2))
     void queueNotifyOutOfBandNV(VkQueue queue, const VkOutOfBandQueueTypeInfoNV* pQueueTypeInfo) const noexcept {
-        fp_vkQueueNotifyOutOfBandNV(queue, pQueueTypeInfo);
+        fp_vkQueueNotifyOutOfBandNV(queue, *pQueueTypeInfo);// @MODIFIED
     }
 #endif
 #if (defined(VK_KHR_dynamic_rendering_local_read))

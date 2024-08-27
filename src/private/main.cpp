@@ -1,5 +1,6 @@
 #include "core_include.hpp"
 #include "default_plugins.hpp"
+#include "vulkan/vulkan_core.h"
 
 struct SomeSystem {
 	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
