@@ -2,6 +2,8 @@
 #include "ecs/world.hpp"
 #include "threading/task.hpp"
 
+#define PRINT_SYSTEM_ORDERING 1
+
 App::App() {
 	group_subsequents.resize(get_num_groups());
 	group_prerequisites.resize(get_num_groups());
@@ -132,8 +134,9 @@ auto App::run(const usize num_worker_threads) -> void {
 		});
 	}
 
-	fmt::println("AFTER:");
+#if PRINT_SYSTEM_ORDERING
 	print_subsequents();
+#endif
 
 	// Find prerequisite systems for event.
 	for (EventId id = 0; id < get_num_events(); ++id) {

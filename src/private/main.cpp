@@ -27,7 +27,7 @@ auto main() -> int {
 		.register_system<SomeSystem>()
 		.run();
 
-	WARN("EXITING!");
+	fmt::println("EXITING!");
 
 	std::this_thread::sleep_for(std::chrono::seconds{1});
 }

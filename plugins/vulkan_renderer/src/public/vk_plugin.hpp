@@ -8,7 +8,6 @@
 
 struct App;
 
-namespace res {
 struct WindowConfig {
 	const char* [[clang::lifetimebound]] title = "GanEngine";
 	struct {
@@ -17,6 +16,7 @@ struct WindowConfig {
 	} extent;
 };
 
+namespace res {
 struct IsRendering {
 	bool value = false;
 };
@@ -28,7 +28,7 @@ struct RenderShutdown {};
 }
 
 struct VkPlugin {
-	res::WindowConfig window_config;
+	WindowConfig window_config;
 	VkPresentModeKHR present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
 
 	auto init(App& app) -> void;

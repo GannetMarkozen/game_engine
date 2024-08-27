@@ -60,7 +60,10 @@ endif()
 set(VULKAN_SDK "$ENV{VULKAN_SDK}")
 
 link_directories("${VULKAN_SDK}/Lib")
+
 find_package(Vulkan REQUIRED)
+
+add_subdirectory("third_party/vk-bootstrap")
 
 # Include Vulkan SDK directories.
 target_include_directories(vulkan_renderer
@@ -68,6 +71,7 @@ target_include_directories(vulkan_renderer
 	PUBLIC "${VulkanHeaders_SOURCE_DIR}/include"# C++ API.
 	PUBLIC "${vma_SOURCE_DIR}/include"
 	PUBLIC "${stb_SOURCE_DIR}"
+	PUBLIC "${THIRD_PARTY}/vk-bootstrap"
 )
 
 target_link_libraries(vulkan_renderer
@@ -78,6 +82,7 @@ target_link_libraries(vulkan_renderer
 	# Other dependencies.
 	PRIVATE Vulkan::Vulkan
 	PRIVATE GPUOpen::VulkanMemoryAllocator
+	PRIVATE vk-bootstrap::vk-bootstrap
 	PRIVATE SDL2::SDL2
 	PRIVATE tinyobjloader
 )

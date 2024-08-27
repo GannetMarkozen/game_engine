@@ -7,6 +7,8 @@
 #include "ecs/app.hpp"
 #include "gameplay_framework.hpp"
 
+// @TMP: All of this is tmp until I can come up with better abstractions.
+
 static_assert(null == VK_NULL_HANDLE);
 
 namespace res {
@@ -22,10 +24,12 @@ struct VkEngine {
 }
 
 struct VkInitSystem {
+	explicit constexpr VkInitSystem(WindowConfig window_config)
+		: window_config{std::move(window_config)} {}
+
 	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
 		return {
 			.resources{
-				.reads = ResMask::make<res::WindowConfig>(),
 				.writes = ResMask::make<res::VkEngine, res::IsRendering>(),
 			},
 		};
@@ -36,16 +40,15 @@ struct VkInitSystem {
 		SDL_Init(SDL_INIT_VIDEO);
 
 		auto& engine = context.get_mut_res<res::VkEngine>();
-		const auto& window_config = context.get_res<res::WindowConfig>();
 
 		static constexpr auto WINDOW_FLAGS = SDL_WINDOW_VULKAN;
 		engine.window = SDL_CreateWindow(window_config.title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, window_config.extent.width, window_config.extent.height, WINDOW_FLAGS);
 
 		// Create VkInstance.
-
-
 		context.get_mut_res<res::IsRendering>().value = true;// Begin rendering.
 	}
+
+	WindowConfig window_config;
 };
 
 struct VkDrawSystem {
@@ -101,24 +104,28 @@ struct VkShutdownSystem {
 		return {
 			.resources{
 				.writes = ResMask::make<res::VkEngine>(),
-			}
+			},
 		};
 	}
 
 	auto execute(ExecContext& context) -> void {
-		WARN("Begin destroy window!");
+		fmt::println("Begin destroy window!");
 
 		auto& engine = context.get_mut_res<res::VkEngine>();
+
+		SDL_Quit();
 
 		SDL_DestroyWindow(engine.window);
 		engine.window = null;
 
-		WARN("Destroyed window!");
+		fmt::println("Destroyed window!");
 	}
 };
 
 auto VkPlugin::init(App& app) -> void {
 	app
+		.register_resource<res::VkEngine>()
+		.register_resource<res::IsRendering>()
 		.register_group<group::RenderInit>(Ordering{
 			.within = GroupId::invalid_id(),
 		})
@@ -130,23 +137,20 @@ auto VkPlugin::init(App& app) -> void {
 			.within = GroupId::invalid_id(),
 			.after = GroupMask::make<group::RenderInit>(),
 		})
-		.register_resource<res::IsRendering>()
-		.register_resource(std::move(window_config))
-		.register_resource<res::VkEngine>()
 		.register_system<VkInitSystem>(SystemDesc{
 			.group = get_group_id<group::RenderInit>(),
 			.event = get_event_id<event::OnInit>(),
 			.priority = Priority::HIGH,
-		})
+			.thread = Thread::MAIN,// SDL must be initialized and destroyed on the same thread.
+		}, std::move(window_config))
 		.register_system<VkDrawSystem>(SystemDesc{
 			.group = get_group_id<group::RenderFrame>(),
 			.event = get_event_id<event::OnUpdate>(),
 			.priority = Priority::HIGH,
 		})
-		#if 01
 		.register_system<VkShutdownSystem>(SystemDesc{
 			.group = get_group_id<group::RenderShutdown>(),
 			.event = get_event_id<event::OnShutdown>(),
+			.thread = Thread::MAIN,// SDL must be initialized and destroyed on the same thread.
 		});
-		#endif
 }
