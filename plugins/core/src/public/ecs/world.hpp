@@ -224,6 +224,7 @@ struct World {
 	NON_COPYABLE(World);
 
 	explicit World(const App& app [[clang::lifetimebound]]);
+	~World();
 
 	auto run() -> void;
 
@@ -543,9 +544,9 @@ struct World {
 
 	// Enqueues a task that will run before / after any accessing systems (biasing before if possible) so it will be thread-safe to modify the archetype (assuming nothing else is also accessing the archetype).
 	template <bool ASSUMES_LOCKED = false>
-	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY,
+	auto enqueue_archetype_mod_task(::cpts::Invokable<const SharedPtr<Task>&> auto&& fn, const Span<const Archetype*> archetypes, const Priority priority = Priority::HIGH, const Thread thread = Thread::ANY
 #if ASSERTIONS_ENABLED
-		Optional<String> task_name = {}
+		, Optional<String> task_name = {}
 #endif
 		) -> SharedPtr<Task>
 	{
@@ -1012,6 +1013,10 @@ struct World {
 		});
 	}
 
+	// Sigh. Just to break circular-dependencies. Modules would be nice.
+	[[nodiscard]] auto get_accessing_systems(const ArchetypeDesc& desc) const -> SystemMask;
+	[[nodiscard]] auto get_system_access_requirements(const SystemId id) const -> const AccessRequirements&;
+
 	const App& app;
 
 	Array<UniquePtr<SystemBase>> systems;// Indexed via SystemId.
@@ -1028,22 +1033,17 @@ struct World {
 	Array<ArchetypeMask> comp_archetypes_mask;// Indexed via CompId. A mask of all archetypes that contain this component.
 	Array<SystemMask> archetype_accessing_systems;// Indexed via ArchetypeId. All the systems that require access to this archetype.
 
+	ResArray<void*> resources;
+
 	Lock<Map<ArchetypeId, Pair<Array<Entity>, Array<PendingEntityConstruction>>>> pending_entity_ctor_dtor;
 	Lock<Map<ArchetypeTraversal, Array<PendingEntityConstruction>>> pending_entity_archetype_traversal;
 
 	volatile bool is_pending_destruction = false;
 
 	RwLock<EntityList> entities;// At bottom because it has a huge inline allocation.
-
-private:
-	// Sigh. Just to break circular-dependencies. Modules would be nice.
-	[[nodiscard]] auto get_accessing_systems(const ArchetypeDesc& desc) const -> SystemMask;
-	[[nodiscard]] auto get_system_access_requirements(const SystemId id) const -> const AccessRequirements&;
 };
 
 struct ExecContext {
-	using DeferredFn = Fn<void(const ExecContext&)>;
-
 	template <typename... Comps> requires (sizeof...(Comps) > 0 && (!std::is_empty_v<std::decay_t<Comps>> || ...))
 	auto spawn_entity(Comps&&... comps) const -> Entity {
 		return world.spawn_entity(*this, std::forward<Comps>(comps)...);
@@ -1074,6 +1074,134 @@ struct ExecContext {
 		(anys.push_back(Any::make<std::decay_t<AddComps>>(std::forward<AddComps>(add_comps))), ...);
 
 		return world.modify_entity(entity, CompMask::make<std::decay_t<AddComps>...>(), CompMask::make<RemoveComps...>(), std::move(anys));
+	}
+
+	[[nodiscard]] auto get_matching_archetypes_assumes_locked(const CompMask& includes, const CompMask& excludes) const -> ArchetypeMask {
+		ArchetypeMask out;
+
+		includes.for_each([&](const CompId id) {
+			if (out.mask.is_empty()) {
+				out = world.comp_archetypes_mask[id];
+			} else {
+				out &= world.comp_archetypes_mask[id];
+			}
+		});
+
+		excludes.for_each([&](const CompId id) {
+			// Must resize the mask to max size before flipping bits in this case.
+			// @TODO: operator~ should somehow just handle this.
+			ArchetypeMask mask = world.comp_archetypes_mask[id];
+			mask.mask.resize_to_fit(world.archetypes.size());
+			mask.flip_bits();
+			mask.mask.words.back() &= std::numeric_limits<u64>::max() >> (world.archetypes.size() % 64);
+
+			out &= mask;
+		});
+
+		return out;
+	}
+
+	template <typename... Comps>
+	auto for_each_entity_view(::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn, const CompMask& excludes = {}) const -> void {
+#if ASSERTIONS_ENABLED
+		{
+			CompMask reads, writes;
+			([&] {
+				if constexpr (std::is_const_v<Comps>) {
+					reads.add<std::decay_t<Comps>>();
+				} else {
+					writes.add<std::decay_t<Comps>>();
+					reads.add<std::decay_t<Comps>>();
+				}
+			}(), ...);
+
+			const auto& access_requirements = world.get_system_access_requirements(currently_executing_system);
+			ASSERTF(((access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes) == writes,
+				"{} does not have proper access requirements to access {} mutably!", currently_executing_system, ~(access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes);
+
+			ASSERTF((access_requirements.get_accessing_comps() & reads) == reads,
+				"{} does not have the proper access requirements to access {} immutably!", currently_executing_system, ~access_requirements.get_accessing_comps() & reads);
+		}
+#endif
+
+		const auto includes = CompMask::make<std::decay_t<Comps>...>();
+
+		ScopeSharedLock _{world.archetypes_mutex};
+
+		// @TODO: Cache matching archetype results.
+		get_matching_archetypes_assumes_locked(includes, excludes).for_each([&](const ArchetypeId id) {
+			world.archetypes[id]->for_each_view<Comps...>(FORWARD_AUTO(fn));
+		});
+	}
+
+	template <typename... Comps> requires (sizeof...(Comps) > 0)
+	[[nodiscard]] auto get_comps(const Entity entity) const -> Tuple<Comps&...> {
+#if ASSERTIONS_ENABLED
+		{
+			CompMask reads, writes;
+			([&] {
+				if constexpr (std::is_const_v<Comps>) {
+					reads.add<std::decay_t<Comps>>();
+				} else {
+					writes.add<std::decay_t<Comps>>();
+					reads.add<std::decay_t<Comps>>();
+				}
+			}(), ...);
+
+			const auto& access_requirements = world.get_system_access_requirements(currently_executing_system);
+			ASSERTF(((access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes) == writes,
+				"{} does not have proper access requirements to access {} mutably!", currently_executing_system, ~(access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes);
+
+			ASSERTF((access_requirements.get_accessing_comps() & reads) == reads,
+				"{} does not have the proper access requirements to access {} immutably!", currently_executing_system, ~access_requirements.get_accessing_comps() & reads);
+		}
+#endif
+
+		const auto [archetype_id, index_within_archetype] = [&] {
+			const auto& desc = world.entities.read()->get_entity_desc(entity);
+			ASSERT(desc.is_initialized());
+			return utils::make_tuple(desc.archetype, desc.index_within_archetype);
+		}();
+
+		Archetype& archetype = [&] -> auto& {
+			ScopeSharedLock _{world.archetypes_mutex};
+			return *world.archetypes[archetype_id];
+		}();
+
+		return archetype.get<Comps...>(index_within_archetype);
+	}
+
+	template <typename T>
+	[[nodiscard]] auto get_comp(const Entity entity) const -> const T& {
+		return std::get<0>(get_comps<const T>(entity));
+	}
+
+	template <typename T>
+	[[nodiscard]] auto get_mut_comp(const Entity entity) const -> T& {
+		return std::get<0>(get_comps<T>(entity));
+	}
+
+	template <typename... Comps>
+	auto for_each_entity(::cpts::Invokable<const Entity&, Comps&...> auto&& fn, const CompMask& excludes = {}) const -> void {
+		for_each_entity_view<Comps...>([&](const usize count, const Entity* entities, Comps*... comps) {
+			for (usize i = 0; i < count; ++i) {
+				std::invoke(FORWARD_AUTO(fn), entities[i], comps[i]...);
+			}
+		}, excludes);
+	}
+
+	template <typename T>
+	[[nodiscard]] auto get_res() const -> const T& {
+		ASSERTF(world.get_system_access_requirements(currently_executing_system).get_accessing_resources().has<T>(),
+			"{} does not have the proper access requirements to access {} immutably!", currently_executing_system, utils::get_type_name<T>());
+		return *static_cast<const T*>(world.resources[get_res_id<T>()]);
+	}
+
+	template <typename T>
+	[[nodiscard]] auto get_mut_res() const -> T& {
+		ASSERTF(world.get_system_access_requirements(currently_executing_system).resources.writes.has<T>() || world.get_system_access_requirements(currently_executing_system).comps.concurrent_writes.has<T>(),
+			"{} does not have the proper access requirements to access {} mutably!", currently_executing_system, utils::get_type_name<T>());
+		return *static_cast<T*>(world.resources[get_res_id<T>()]);
 	}
 
 	World& [[clang::lifetimebound]] world;

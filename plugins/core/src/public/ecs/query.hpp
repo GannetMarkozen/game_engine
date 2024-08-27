@@ -3,15 +3,17 @@
 #include "world.hpp"
 
 namespace ecs {
+// An efficient mechanism for iterating for entities / components matching a composition. Caches matching archetypes for maximal efficiency.
 template <typename... Comps> requires (!std::is_empty_v<Comps> && ...)
 struct Query {
-	FORCEINLINE auto for_each_view(const World& world, ::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn) -> void {
-		{
-			ScopeSharedLock _{world.archetypes_mutex};
+	auto for_each_view(const ExecContext& context, ::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn) -> void {
+		assert_has_valid_access_requirements(context);
 
-			if (previous_archetype_count != world.archetypes.size()) [[unlikely]] {
-				update_matching_archetypes_assumes_locked(world);
-			}
+		if (previous_archetype_count != context.world.archetypes.size()) [[unlikely]] {
+			ScopeSharedLock _{context.world.archetypes_mutex};
+
+			ASSERT(previous_archetype_count != context.world.archetypes.size());
+			update_matching_archetypes_assumes_locked(context.world);
 		}
 
 		for (Archetype* archetype : matching_archetypes) {
@@ -19,8 +21,8 @@ struct Query {
 		}
 	}
 
-	FORCEINLINE auto for_each(const World& world, ::cpts::Invokable<const Entity&, Comps&...> auto&& fn) -> void {
-		for_each_view(world, [&](const usize count, const Entity* entities, Comps*... comps) {
+	FORCEINLINE auto for_each(const ExecContext& context, ::cpts::Invokable<const Entity&, Comps&...> auto&& fn) -> void {
+		for_each_view(context, [&](const usize count, const Entity* entities, Comps*... comps) {
 			for (usize i = 0; i < count; ++i) {
 				std::invoke(FORWARD_AUTO(fn), entities[i], comps[i]...);
 			}
@@ -59,33 +61,28 @@ struct Query {
 			matching_archetypes.push_back(world.archetypes[id].get());
 		});
 
-		//WARN("Matches with {}. Size == {}", world.archetypes[id]->description.comps, world.archetypes.size());
-		WARN("Updated! Matching against {} ({}).", [&] {
-			String out;
-			for (const auto* archetype : matching_archetypes) {
-				out += fmt::format("{}, ", archetype->description.comps);
-			}
-			return out;
-		}(), matching_archetypes.size());
-
 		previous_archetype_count = world.archetypes.size();
 	}
 
-	[[nodiscard]] auto get_access_requirements() const -> AccessRequirements {
-		AccessRequirements out{
-			.reads = includes,
-		};
-
+	static auto assert_has_valid_access_requirements(const ExecContext& context) -> void {
+#if ASSERTIONS_ENABLED
+		CompMask reads, writes;
 		([&] {
-			if constexpr (std::is_const_v<Comps>) {
-				out.reads.add<std::decay_t<Comps>>();
-			} else {
-				out.writes.add<std::decay_t<Comps>>();
+			reads.add<std::decay_t<Comps>>();
+			if constexpr (!std::is_const_v<Comps>) {
+				writes.add<std::decay_t<Comps>>();
 			}
 		}(), ...);
 
-		return out;
+		const AccessRequirements& access_requirements = context.world.get_system_access_requirements(context.currently_executing_system);
+
+		ASSERTF(((access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes) == writes,
+				"{} does not have proper access requirements to access {} mutably!", context.currently_executing_system, ~(access_requirements.comps.writes | access_requirements.comps.concurrent_writes) & writes);
+		ASSERTF((access_requirements.get_accessing_comps() & reads) == reads,
+			"{} does not have the proper access requirements to access {} immutably!", context.currently_executing_system, ~access_requirements.get_accessing_comps() & reads);
+#endif
 	}
+
 
 	const CompMask includes;
 	const CompMask excludes;

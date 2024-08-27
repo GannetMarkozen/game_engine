@@ -11,7 +11,7 @@ template <std::floating_point T> using Mat4x4 = glm::mat<4, 4, T>;
 template <std::floating_point T> using Mat3x3 = glm::mat<3, 3, T>;
 template <std::floating_point T> using Quat = glm::qua<T>;
 
-// @NOTE: If we ever need double-precision world-coordinates, we'd only need to change translation.
+// @NOTE: If we ever need double-precision world-coordinates, we'd only need to change translation, so perhaps T should only affect translation.
 // @NOTE: Not optimized.
 template <std::floating_point T>
 struct Transform {
@@ -31,11 +31,11 @@ struct Transform {
 	}
 
 	[[nodiscard]] friend constexpr auto operator*(const Transform& a, const Transform& b) -> Transform {
-		return a *= b;
+		return auto{a} *= b;
 	}
 
 	[[nodiscard]] constexpr auto operator*(const Vec3<T>& v) -> Vec3<T> {
-		return translation + rotation * v;
+		return (translation + rotation * v) * scale;
 	}
 
 	constexpr auto inverse() -> Transform& {

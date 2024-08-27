@@ -26,6 +26,7 @@ App::App() {
 auto App::run(const usize num_worker_threads) -> void {
 	ASSERTF(!~registered_groups, "Groups {} are implicitly instantiated but are not registered!", ~registered_groups);
 	ASSERTF(!~registered_systems, "Systems {} are implicitly instantiated but are not registered!", ~registered_systems);
+	ASSERTF(!~registered_resources, "Resources {} are implicitly instantiated but not registered!", ~registered_resources);
 
 	// Initialize nested group ordering as subsequents / prerequisites.
 	for (GroupId id = 0; id < get_num_groups(); ++id) {
@@ -239,7 +240,7 @@ auto App::run(const usize num_worker_threads) -> void {
 	// Initialize comp_accessing_systems.
 	for (SystemId id = 0; id < get_num_systems(); ++id) {
 		const AccessRequirements& requirements = system_create_infos[id].desc.access_requirements;
-		(requirements.reads | requirements.writes | requirements.modifies).for_each([&](const CompId comp_id) {
+		requirements.get_accessing_comps().for_each([&](const CompId comp_id) {
 			comp_accessing_systems[comp_id].add(id);
 		});
 	}

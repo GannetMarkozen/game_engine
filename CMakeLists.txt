@@ -108,6 +108,7 @@ target_include_directories(game_engine
 # Plugins.
 add_subdirectory(plugins/core)
 add_subdirectory(plugins/vulkan_renderer)
+add_subdirectory(plugins/gameplay_framework)
 
 target_link_libraries(game_engine
     # Third-party.
@@ -117,4 +118,5 @@ target_link_libraries(game_engine
 
     PRIVATE core
     PRIVATE vulkan_renderer
+    PRIVATE gameplay_framework
 )

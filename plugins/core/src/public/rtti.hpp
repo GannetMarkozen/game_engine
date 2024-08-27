@@ -53,7 +53,7 @@ struct Entry {
 
 struct TypeInfo {
 	StringView name;
-	usize size, alignment, alloc_alignment;
+	usize size, alignment;
 	Flags flags;
 	Type type;
 
@@ -78,7 +78,6 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 	.name = utils::get_type_name<T>(),
 	.size = sizeof(T),
 	.alignment = alignof(T),
-	.alloc_alignment = alignof(T) > mem::DEFAULT_ALIGNMENT_SIZE ? alignof(T) : mem::DEFAULT_ALIGNMENT,
 	.flags = [] {
 		Flags out = Flags::NONE;
 		if constexpr (std::is_trivial_v<T>) out |= Flags::TRIVIAL;
@@ -487,7 +486,7 @@ struct Any {
 		}
 
 		type_info = other.type_info;
-		data = mem::alloc(type_info->size, type_info->alloc_alignment);
+		data = mem::alloc(type_info->size, type_info->alignment);
 		type_info->copy_construct(data, other.data, 1);
 	}
 
@@ -521,7 +520,7 @@ struct Any {
 
 			if (other.has_value()) {
 				type_info = other.type_info;
-				data = mem::alloc(type_info->size, type_info->alloc_alignment);
+				data = mem::alloc(type_info->size, type_info->alignment);
 				type_info->copy_construct(data, other.data, 1);
 			}
 		}
@@ -561,7 +560,7 @@ struct Any {
 			ASSERT(data);
 
 			type_info->destruct(data, 1);
-			mem::dealloc(data, type_info->alloc_alignment);
+			mem::dealloc(data, type_info->alignment);
 
 			data = null;
 			type_info = null;

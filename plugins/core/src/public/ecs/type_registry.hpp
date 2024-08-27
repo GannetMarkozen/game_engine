@@ -477,18 +477,9 @@ struct TypeMultiArray {
 	}
 
 	[[nodiscard]] FORCEINLINE static constexpr auto get_alignment() -> usize {
-		usize max_alignment = mem::DEFAULT_ALIGNMENT;
+		usize max_alignment = 0;
 		((max_alignment = std::max(max_alignment, alignof(Ts))), ...);
 		return max_alignment;
-	}
-
-	[[nodiscard]] FORCEINLINE static constexpr auto get_allocation_alignment() -> usize {
-		static constexpr auto ALIGNMENT = get_alignment();
-		if constexpr (ALIGNMENT <= 8) {
-			return mem::DEFAULT_ALIGNMENT;
-		} else {
-			return ALIGNMENT;
-		}
 	}
 
 	[[nodiscard]] FORCEINLINE static auto get_size() -> usize {

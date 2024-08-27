@@ -10,16 +10,30 @@ World::World(const App& app)
 
 	comp_archetypes_mask.resize(get_num_comps());
 
+	// Create resources.
+	for (ResId id = 0; id < get_num_resources(); ++id) {
+		resources[id] = app.resource_factories[id]();
+	}
+
 	// Create systems.
 	for (const auto& create_info : app.system_create_infos) {
 		systems.push_back(create_info.factory());
 	}
 }
 
+World::~World() {
+	// Destroy resources.
+	for (ResId id = 0; id < get_num_resources(); ++id) {
+		const auto& type_info = get_type_info(id);
+		type_info.destruct(resources[id], 1);
+		mem::dealloc(resources[id], type_info.alignment);
+	}
+}
+
 auto World::run() -> void {
 	ASSERT(thread::is_in_main_thread());
 
-	dispatch_event<event::OnInit>(); 
+	dispatch_event<event::OnInit>();
 
 	task::do_work_until_all_tasks_complete([&] { return is_pending_destruction; });
 }

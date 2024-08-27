@@ -9,7 +9,14 @@
 #include "utils.hpp"
 #include "ecs/query.hpp"
 
+#include "gameplay_framework.hpp"
+
 #include "linalg.hpp"
+
+
+struct SomeResource {
+	Array<String> names = { "Bob", "Bill", "Joe", };
+};
 
 Atomic<ecs::SystemId> executing_system = ecs::SystemId::invalid_id();
 
@@ -30,7 +37,13 @@ struct SpawningSystem {
 
 	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements {
 		return {
-			.reads = ecs::CompMask::make<Vec3>(),
+			.comps{
+				.reads = ecs::CompMask::make<Vec3>(),
+			},
+			.resources{
+				.reads = ecs::ResMask::make<SomeResource>(),
+			},
+			//.comps.reads = ecs::CompMask::make<Vec3>(),
 		};
 	}
 
@@ -45,8 +58,6 @@ struct SpawningSystem {
 
 		ASSERT(&context.world);
 
-		static constexpr auto THING = alignof(Quat);
-
 		if constexpr (I == 0) {
 			for (usize i = 0; i < 100; ++i) {
 				const Entity entity = context.world.spawn_entity(
@@ -54,13 +65,23 @@ struct SpawningSystem {
 				);
 			}
 		} else {
+			#if 01
 			usize count = 0;
-			query.for_each(context.world, [&](const Entity& entity, const Vec3& vec) {
+			query.for_each(context, [&](const Entity& entity, const Vec3& vec) {
 				context.add_comps(entity, Name{.name = count % 2 == 0 ? "Jill" : "Bob"});
 				context.add_comps(entity, Name{.name = "New"}, Health{.value = 99.f});
 				//context.world.destroy_entity(entity);
 				++count;
 			});
+			#else
+
+			usize count = 0;
+			context.for_each_entity<const Vec3>([&](const Entity& entity, const Vec3& vec) {
+				context.add_comps(entity, Name{.name = count % 2 == 0 ? "Jill" : "Bob"});
+				context.add_comps(entity, Name{.name = "New"}, Health{.value = 99.f});
+				++count;
+			});
+			#endif
 
 			fmt::println("Num entities == {}", count);
 		}
@@ -76,7 +97,14 @@ struct SpawningSystem {
 };
 
 struct LoopSystem {
-	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements { return { .reads = ecs::CompMask::make<Vec3, Name>(), }; }
+	//[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements { return { .reads = ecs::CompMask::make<Vec3, Name>(), }; }
+	[[nodiscard]] static auto get_access_requirements() -> ecs::AccessRequirements {
+		return {
+			.comps{
+				.reads = ecs::CompMask::make<Vec3, Name>(),
+			},
+		};
+	}
 
 	FORCEINLINE auto execute(ecs::ExecContext& context) -> void {
 		//std::this_thread::sleep_for(std::chrono::seconds{2});
@@ -94,14 +122,14 @@ struct LoopSystem {
 		} else {
 			usize count_1 = 0;
 			usize count_2 = 0;
-			#if 0
-			query.for_each(context.world, [&](const Entity& entity, const Vec3& vec) {
+			#if 01
+			query.for_each(context, [&](const Entity& entity, const Vec3& vec) {
 				fmt::println("{}: {{{} {} {}}}", entity, vec.x, vec.y, vec.z);
 				++count_1;
 			});
 			#endif
 
-			other_query.for_each(context.world, [&](const Entity& entity, const Vec3& vec, const Name& name) {
+			other_query.for_each(context, [&](const Entity& entity, const Vec3& vec, const Name& name) {
 				fmt::println("{}: {{{} {} {}}}, {}", entity, vec.x, vec.y, vec.z, name.name);
 				++count_2;
 			});
@@ -188,12 +216,16 @@ auto main() -> int {
 		.register_system<LoopSystem>(SystemDesc{
 			.group = get_group_id<EndFrameGroup>(),
 			.event = get_event_id<event::OnInit>(),
-		});
+		})
+		.insert_resource(SomeResource{});
 
 #if 01
 		utils::make_index_sequence_param_pack<10>([&]<usize... Is>() {
 			(register_system.operator()<Is>(), ...);
 		});
 #endif
+
+		fmt::println("{}", get_res_id<SomeResource>());
+
 		app.run();
 }

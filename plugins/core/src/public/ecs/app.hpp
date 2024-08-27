@@ -149,6 +149,28 @@ struct App {
 		return *this;
 	}
 
+	template <typename T>
+	auto insert_resource(T&& resource) -> App& {
+		resource_factories[get_res_id<std::decay_t<T>>()] = [resource = std::move(resource)] -> void* {
+			return new std::decay_t<T>{resource};
+		};
+#if ASSERTIONS_ENABLED
+		registered_resources.add<std::decay_t<T>>();
+#endif
+		return *this;
+	}
+
+	template <typename T, typename... Args> requires std::constructible_from<T, const Args&...>
+	auto insert_resource(Args&&... args) -> App& {
+		resource_factories[get_res_id<T>()] = std::bind([](const Args&... args) -> void* {
+			return new T{args...};
+		}, std::forward<Args>(args)...);
+#if ASSERTIONS_ENABLED
+		registered_resources.add<T>();
+#endif
+		return *this;
+	}
+
 	auto register_plugin(cpts::Plugin auto&& plugin) -> App& {
 		plugin.init(*this);
 		return *this;
@@ -173,9 +195,12 @@ struct App {
 	GroupMask root_groups;// Groups with no prerequisites.
 	GroupMask leaf_groups;// Groups with no subsequents.
 
+	ResArray<Fn<void*()>> resource_factories;
+
 #if ASSERTIONS_ENABLED
 	GroupMask registered_groups;
 	SystemMask registered_systems;
+	ResMask registered_resources;
 #endif
 
 	Optional<World> world;// Constructed in run().
