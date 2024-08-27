@@ -2,7 +2,6 @@
 #include "ecs/app.hpp"
 #include "threading/task.hpp"
 
-namespace ecs {
 World::World(const App& app)
 	: app{app} {
 	systems.reserve(get_num_systems());
@@ -157,25 +156,21 @@ auto World::dispatch_event(const EventId event) -> void {
 		Array<SharedPtr<Task>> prerequisites;
 
 		const GroupId group = app.system_create_infos[id].desc.group;
-		#if 0
-		app.group_prerequisites[group].for_each([&](const GroupId prerequisite_group) {
-			app.group_systems[prerequisite_group].for_each([&](const SystemId prerequisite_system) {
-				auto prerequisite_task = system_tasks[prerequisite_system].lock();
-				if (prerequisite_task && !prerequisite_task->has_completed()) {
-					fmt::println("{} -> {}", get_type_info(prerequisite_system).name, get_type_info(id).name);
-					prerequisites.push_back(std::move(prerequisite_task));
-				}
-			});
-		});
-		#endif
-
 		app.group_subsequents[group].for_each([&](const GroupId subsequent_group) {
 			app.group_systems[subsequent_group].for_each([&](const SystemId subsequent_system) {
 				auto subsequent_task = system_tasks[subsequent_system].lock();
 				if (subsequent_task && !subsequent_task->has_completed()) {
-					fmt::println("{} -> {}", get_type_info(id).name, get_type_info(subsequent_system).name);
 					const auto result = system_tasks[id].lock()->add_subsequent(std::move(subsequent_task));
-					ASSERT(result == Task::AddSubsequentResult::SUCCESS);
+
+					ASSERTF(app.system_create_infos[subsequent_system].desc.event != event || result == Task::AddSubsequentResult::SUCCESS, "Failed to add subsequent of task {} to task {}! Result == {}!",
+						subsequent_system, id, [&] {
+							switch (result) {
+							case Task::AddSubsequentResult::SUCCESS: return "SUCCESS";
+							case Task::AddSubsequentResult::SUBSEQUENT_ALREADY_COMPLETED: return "SUBSEQUENT_ALREADY_COMPLETED";
+							case Task::AddSubsequentResult::SUBSEQUENT_ALREADY_EXECUTING: return "SUBSEQUENT_ALREADY_EXECUTING";
+							case Task::AddSubsequentResult::PREREQUISITE_ALREADY_COMPLETED: return "PREREQUISITE_ALREADY_COMPLETED";
+							}
+						}());
 				}
 			});
 		});
@@ -276,5 +271,4 @@ auto World::get_accessing_systems(const ArchetypeDesc& desc) const -> SystemMask
 
 auto World::get_system_access_requirements(const SystemId id) const -> const AccessRequirements& {
 	return app.system_create_infos[id].desc.access_requirements;
-}
 }

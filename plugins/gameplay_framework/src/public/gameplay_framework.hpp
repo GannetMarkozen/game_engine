@@ -2,8 +2,18 @@
 
 #include "core_include.hpp"
 
-namespace ecs { struct App; }
+struct App;
+
+namespace group {
+struct EndGameFrame {};
+}
+
+namespace res {
+struct RequestExit {
+	bool value = false;
+};
+}
 
 struct GameplayFrameworkPlugin {
-	auto init(ecs::App& app) const -> void;
+	auto init(App& app) const -> void;
 };

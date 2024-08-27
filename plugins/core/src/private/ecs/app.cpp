@@ -2,7 +2,6 @@
 #include "ecs/world.hpp"
 #include "threading/task.hpp"
 
-namespace ecs {
 App::App() {
 	group_subsequents.resize(get_num_groups());
 	group_prerequisites.resize(get_num_groups());
@@ -253,39 +252,3 @@ auto App::run(const usize num_worker_threads) -> void {
 
 	task::deinit();
 }
-}
-
-
-#if 0
-#include "ecs/world.hpp"
-#include "ecs/app.hpp"
-#include "threading/task.hpp"
-
-namespace ecs {
-App::App() {
-	group_construction_info.resize(get_num_groups());
-}
-
-auto App::run(const usize num_worker_threads) -> void {
-	subsequent_groups.resize(get_num_groups());
-	concurrent_groups.resize(get_num_groups());
-
-	// Resolve dependencies.
-	for (GroupId id = 0; id < get_num_groups(); ++id) {
-		subsequent_groups[id] = std::move(group_construction_info[id].subsequents);
-
-		group_construction_info[id].prerequisites.for_each([&](const GroupId prerequisite_id) {
-			subsequent_groups[prerequisite_id].add(id);
-		});
-
-		if (!group_construction_info[id].prerequisites.mask.has_any_set_bits()) {
-			root_groups.add(id);
-		}
-	}
-
-	task::init(num_worker_threads);
-
-	task::deinit();
-}
-}
-#endif

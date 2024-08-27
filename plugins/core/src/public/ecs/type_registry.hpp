@@ -7,7 +7,6 @@
 #include "utils.hpp"
 #include "concepts.hpp"
 
-namespace ecs {
 // @TODO: Use lazy-initialization instead of global-initialization to avoid some weird edge-cases.
 template <cpts::IntAlias IdType>
 struct TypeRegistry {
@@ -263,18 +262,16 @@ template <cpts::IntAlias T>
 [[nodiscard]] FORCEINLINE auto get_type_info(const T id) -> const rtti::TypeInfo& {
 	return TypeRegistry<T>::get_type_info(id);
 }
-}
 
 namespace std {
 template <cpts::IntAlias T, usize N, std::unsigned_integral Word>
-struct hash<ecs::StaticTypeMask<T, N, Word>> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::StaticTypeMask<T, N, Word>& value) const -> usize {
+struct hash<StaticTypeMask<T, N, Word>> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const StaticTypeMask<T, N, Word>& value) const -> usize {
 		return value.mask.hash();
 	}
 };
 }
 
-namespace ecs {
 // @TODO: Should take an Allocator argument.
 // Automatically allocates and default-constructs on instantiation.
 template <cpts::IntAlias IdType, typename T>
@@ -552,9 +549,8 @@ struct TypeMultiArray {
 
 	void* data;
 };
-}
 
-template <cpts::IntAlias IdType> requires (utils::get_raw_type_name<IdType>().contains("ecs::"))
+template <cpts::IntAlias IdType>
 struct fmt::formatter<IdType> {
 	constexpr auto parse(fmt::format_parse_context& context) {
 		return context.begin();
@@ -562,18 +558,18 @@ struct fmt::formatter<IdType> {
 
 	template <typename FmtContext>
 	auto format(const IdType& value, FmtContext& context) {
-		return fmt::format_to(context.out(), "{}", ecs::get_type_info(value).name);
+		return fmt::format_to(context.out(), "{}", get_type_info(value).name);
 	}
 };
 
 template <usize N, cpts::IntAlias IdType>
-struct fmt::formatter<ecs::StaticTypeMask<IdType, N>> {
+struct fmt::formatter<StaticTypeMask<IdType, N>> {
 	constexpr auto parse(fmt::format_parse_context& context) {
 		return context.begin();
 	}
 
 	template <typename FmtContext>
-	auto format(const ecs::StaticTypeMask<IdType, N>& value, FmtContext& context) {
+	auto format(const StaticTypeMask<IdType, N>& value, FmtContext& context) {
 		String out;
 		bool is_first = true;
 		value.for_each([&](const IdType id) {

@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <variant>
 
-namespace ecs {
 struct App;
 struct World;
 
@@ -31,16 +30,14 @@ struct ArchetypeTraversal {
 
 	ArchetypeId from, to;
 };
-}
 
 template <>
-struct std::hash<ecs::ArchetypeTraversal> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::ArchetypeTraversal& value) const -> usize {
+struct std::hash<ArchetypeTraversal> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ArchetypeTraversal& value) const -> usize {
 		return value.hash();
 	}
 };
 
-namespace ecs {
 struct EntityDesc {
 	[[nodiscard]] constexpr auto is_initialized() const -> bool {
 		return archetype.is_valid();
@@ -1209,4 +1206,3 @@ struct ExecContext {
 	const SystemId currently_executing_system;
 	const std::thread::id currently_executing_system_thread;
 };
-}

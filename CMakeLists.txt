@@ -100,13 +100,10 @@ find_package(Vulkan REQUIRED)
 target_include_directories(game_engine
     PUBLIC src/public
     PRIVATE src/private
-    #PRIVATE ${VulkanHeaders_SOURCE_DIR}/include
-
-    # Add plugins directory.
-    PUBLIC plugins
 )
 # Plugins.
 add_subdirectory(plugins/core)
+add_subdirectory(plugins/default_plugins)
 add_subdirectory(plugins/vulkan_renderer)
 add_subdirectory(plugins/gameplay_framework)
 
@@ -116,7 +113,5 @@ target_link_libraries(game_engine
     PRIVATE flecs_static
 	PRIVATE Vulkan::Vulkan
 
-    PRIVATE core
-    PRIVATE vulkan_renderer
-    PRIVATE gameplay_framework
+    PRIVATE default_plugins
 )

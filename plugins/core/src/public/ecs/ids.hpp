@@ -2,14 +2,13 @@
 
 #include "type_registry.hpp"
 
-DECLARE_NAMESPACED_INT_ALIAS(ecs, CompId, u16);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, ArchetypeId, u32);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, SystemId, u16);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, GroupId, u16);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, EventId, u8);
-DECLARE_NAMESPACED_INT_ALIAS(ecs, ResId, u8);
+DECLARE_INT_ALIAS(CompId, u16);
+DECLARE_INT_ALIAS(ArchetypeId, u32);
+DECLARE_INT_ALIAS(SystemId, u16);
+DECLARE_INT_ALIAS(GroupId, u16);
+DECLARE_INT_ALIAS(EventId, u8);
+DECLARE_INT_ALIAS(ResId, u8);
 
-namespace ecs {
 struct World;
 struct ExecContext;
 
@@ -31,63 +30,6 @@ template <typename... Ts> using SystemMultiArray = TypeMultiArray<SystemId, Ts..
 template <typename... Ts> using GroupMultiArray = TypeMultiArray<GroupId, Ts...>;
 template <typename... Ts> using EventMultiArray = TypeMultiArray<EventId, Ts...>;
 template <typename... Ts> using ResMultiArray = TypeMultiArray<ResId, Ts...>;
-
-#if 0
-struct AccessRequirements {
-	[[nodiscard]] FORCEINLINE constexpr auto can_execute_concurrently_with(const AccessRequirements& other) const -> bool {
-		return !((writes | modifies) & (other.reads | other.writes | other.modifies)) &&
-			!((other.writes | other.modifies) & (reads | writes | modifies));
-	}
-
-	FORCEINLINE constexpr auto operator|=(const AccessRequirements& other) -> AccessRequirements& {
-		reads |= other.reads;
-		writes |= other.writes;
-		modifies |= other.modifies;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator&=(const AccessRequirements& other) -> AccessRequirements& {
-		reads &= other.reads;
-		writes &= other.writes;
-		modifies &= other.modifies;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto operator^=(const AccessRequirements& other) -> AccessRequirements& {
-		reads ^= other.reads;
-		writes ^= other.writes;
-		modifies ^= other.modifies;
-		return *this;
-	}
-
-	FORCEINLINE constexpr auto negate() -> AccessRequirements& {
-		reads.negate();
-		writes.negate();
-		modifies.negate();
-		return *this;
-	}
-
-	[[nodiscard]] FORCEINLINE constexpr friend auto operator|(AccessRequirements a, const AccessRequirements& b) -> AccessRequirements {
-		return a |= b;
-	}
-
-	[[nodiscard]] FORCEINLINE constexpr friend auto operator&(AccessRequirements a, const AccessRequirements& b) -> AccessRequirements {
-		return a &= b;
-	}
-
-	[[nodiscard]] FORCEINLINE constexpr friend auto operator^(AccessRequirements a, const AccessRequirements& b) -> AccessRequirements {
-		return a ^= b;
-	}
-
-	[[nodiscard]] FORCEINLINE constexpr friend auto operator~(AccessRequirements value) -> AccessRequirements {
-		return value.negate();
-	}
-
-	CompMask reads;// Components with immutable access.
-	CompMask writes;// Components with mutable access.
-	CompMask modifies;// Components being added / removed / spawned (archetype structural changes).
-};
-#endif
 
 struct AccessRequirements {
 	[[nodiscard]] constexpr auto can_execute_concurrently_with(const AccessRequirements& other) const -> bool {
@@ -164,7 +106,6 @@ namespace cpts {
 template <typename T>
 concept System = requires (T t, ExecContext& context) {
 	t.execute(context);
-	{ T::get_access_requirements() } -> std::same_as<AccessRequirements>;
 };
 }
 
@@ -211,5 +152,4 @@ template <typename T>
 
 [[nodiscard]] FORCEINLINE auto get_num_resources() -> usize {
 	return TypeRegistry<ResId>::get_num_registered_types();
-}
 }

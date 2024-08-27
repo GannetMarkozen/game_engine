@@ -4,7 +4,6 @@
 #include "ids.hpp"
 #include "types.hpp"
 
-namespace ecs {
 struct EntityDesc {
 	ArchetypeId archetype_id;
 	usize index_within_archetype;
@@ -109,4 +108,3 @@ struct EntityList {
 	Array<u64> initialized_mask;
 	Optional<usize> first_free_entry;
 };
-}

@@ -7,7 +7,6 @@
 
 struct Task;
 
-namespace ecs {
 struct ArchetypeDesc {
 	[[nodiscard]] FORCEINLINE constexpr auto operator==(const ArchetypeDesc& other) const -> bool {
 		return comps == other.comps;
@@ -15,18 +14,16 @@ struct ArchetypeDesc {
 
 	CompMask comps;
 };
-}
 
 namespace std {
 template <>
-struct hash<ecs::ArchetypeDesc> {
-	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ecs::ArchetypeDesc& value) const -> usize {
-		return std::hash<ecs::CompMask>{}(value.comps);
+struct hash<ArchetypeDesc> {
+	[[nodiscard]] FORCEINLINE constexpr auto operator()(const ArchetypeDesc& value) const -> usize {
+		return std::hash<CompMask>{}(value.comps);
 	}
 };
 }
 
-namespace ecs {
 struct EXPORT_API Archetype {
 	struct Chunk;
 	static constexpr usize BYTES_PER_CHUNK = 1024 * 64 - sizeof(UniquePtr<Chunk>);
@@ -403,4 +400,3 @@ struct EXPORT_API Archetype {
 	ArchetypeDesc description;
 	Chunk head_chunk;
 };
-}

@@ -1,7 +1,7 @@
 #pragma once
 
-namespace ecs { struct App; }
+struct App;
 
 struct VkPlugin {
-	auto init(ecs::App& app) -> void;
+	auto init(App& app) -> void;
 };

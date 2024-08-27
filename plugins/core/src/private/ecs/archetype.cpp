@@ -1,6 +1,5 @@
 #include "ecs/archetype.hpp"
 
-namespace ecs {
 Archetype::Archetype(const ArchetypeDesc& in_description)
 	: description{in_description} {
 	usize aggregate_size = 0;
@@ -99,5 +98,4 @@ auto Archetype::add_uninitialized_entities(const usize count) -> usize {
 	}
 
 	return old_num_entities;
-}
 }

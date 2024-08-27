@@ -6,8 +6,6 @@
 #include "utils.hpp"
 #include "defaults.hpp"
 #include "threading/task.hpp"
-
-namespace ecs {
 struct App;
 
 namespace cpts {
@@ -116,7 +114,7 @@ struct App {
 	}
 
 	template <cpts::System T, typename... Args> requires std::constructible_from<T, Args&&...>
-	auto register_system(SystemDesc desc, Args&&... args) -> App& {
+	auto register_system(SystemDesc desc = {}, Args&&... args) -> App& {
 #if ASSERTIONS_ENABLED
 		ASSERTF(!registered_systems.has<T>(), "Double registered system {}!", utils::get_type_name<T>());
 		registered_systems.add<T>();
@@ -137,7 +135,9 @@ struct App {
 			T system;
 		};
 
-		desc.access_requirements |= T::get_access_requirements();
+		if constexpr (requires { { T::get_access_requirements() } -> std::same_as<AccessRequirements>; }) {
+			desc.access_requirements |= T::get_access_requirements();
+		}
 
 		system_create_infos[get_system_id<T>()] = SystemInfo{
 			.factory = std::bind([](const Args&... args) -> UniquePtr<SystemBase> {
@@ -205,107 +205,3 @@ struct App {
 
 	Optional<World> world;// Constructed in run().
 };
-}
-
-#if 0
-#pragma once
-
-#include "types.hpp"
-#include "ids.hpp"
-#include "system.hpp"
-
-namespace ecs {
-struct App;
-struct World;
-
-namespace cpts {
-template <typename T>
-concept Plugin = requires (const T t, App& app) {
-	t.init(app);
-};
-}
-
-struct GroupOrdering {
-	GroupMask after;
-	GroupMask before;
-};
-
-struct SystemCreateInfo {
-	Optional<GroupId> group;
-};
-
-struct SystemBase {
-	virtual ~SystemBase() = default;
-	virtual auto execute(World& world) -> void = 0;
-};
-
-struct App {
-	struct GroupConstructionInfo {
-		GroupMask prerequisites;
-		GroupMask subsequents;
-		SystemMask systems;
-	};
-
-	struct SystemConstructionInfo {
-		Fn<UniquePtr<SystemBase>()> ctor;
-		Optional<GroupId> group;
-		AccessRequirements access_requirements;
-	};
-
-	App();
-
-	template <::cpts::EnumWithCount auto GROUP>
-	auto add_group(GroupOrdering ordering) -> App& {
-		utils::make_index_sequence_param_pack<utils::enum_count<decltype(GROUP)>>([&]<usize... Is>() {
-			([&] {
-				if constexpr (Is < static_cast<usize>(GROUP)) {
-					ordering.after.add(get_group_id<static_cast<decltype(GROUP)>(Is)>());
-				} else if constexpr (Is > static_cast<usize>(GROUP)) {
-					ordering.before.add(get_group_id<static_cast<decltype(GROUP)>(Is)>());
-				}
-			}(), ...);
-		}); 
-
-		GroupConstructionInfo& out = group_construction_info[get_group_id<GROUP>()];
-		out.prerequisites = std::move(ordering.after);
-		out.subsequents = std::move(ordering.before);
-
-		return *this;
-	}
-
-	template <cpts::System T, typename... Args> requires std::constructible_from<T, Args&&...>
-	auto add_system(SystemCreateInfo create_info, Args&&... args) -> App& {
-		struct System final : public SystemBase {
-			explicit System(Args&&... args)
-				: system{std::forward<Args>(args)...} {}
-
-			virtual auto execute(World& world) -> void {
-				system.execute(world);
-			}
-
-			T system;
-		};
-
-		system_construction_info.push_back(SystemConstructionInfo{
-			.ctor = std::bind([](const auto&... args) -> UniquePtr<SystemBase> {
-				return std::make_unique<System>(args...);
-			}, std::forward<Args>(args)...),
-			.group = create_info.group,
-		});
-
-		if constexpr (cpts::SystemWithAccessRequirements<T>) {
-			system_construction_info.back().access_requirements = T::get_requirements();
-		}
-
-		return *this;
-	}
-
-	auto run(const usize num_worker_threads = std::thread::hardware_concurrency() - 1) -> void;
-
-	Array<GroupConstructionInfo> group_construction_info;// Indexed via GroupId.
-	Array<SystemConstructionInfo> system_construction_info;// Indexed via SystemId.
-
-	UniquePtr<World> world;
-};
-}
-#endif
