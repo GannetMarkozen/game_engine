@@ -1,8 +1,6 @@
 #pragma once
 
-#include "core_include.hpp"
 #include "defines.hpp"
-#include "fmt/printf.h"
 #include "types.hpp"
 #include "traits.hpp"
 #include "utils.hpp"

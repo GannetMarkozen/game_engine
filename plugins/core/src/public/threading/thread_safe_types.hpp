@@ -813,7 +813,7 @@ struct MpscList {
 			.next = head.load(std::memory_order_relaxed),
 		};
 
-		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_relaxed, std::memory_order_relaxed)) {
+		while (!head.compare_exchange_weak(new_head->next, new_head, std::memory_order_seq_cst, std::memory_order_relaxed)) {
 			std::this_thread::yield();
 		}
 
@@ -1175,9 +1175,9 @@ struct MpscMap {
 	[[nodiscard]] constexpr auto find_or_enqueue(Key key) -> AtomicFindOrEnqueueResult<T> {
 		const usize index = Hasher{}(key) % N;
 
-		const AtomicFindOrEnqueueResult<KeyValue> result = slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key));
+		AtomicFindOrEnqueueResult<KeyValue> result = slots[index].find_or_enqueue([&](const KeyValue& other) { return EqualOp{}(key, other.key); }, std::move(key));
 		return AtomicFindOrEnqueueResult<T>{
-			.value = result.value.value,
+			.value = std::move(result.value.value),
 			.result = result.result,
 		};
 	}

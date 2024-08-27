@@ -1,11 +1,10 @@
 #pragma once
 
-#include "core_include.hpp"
-
 struct App;
 
 namespace group {
 struct EndGameFrame {};
+struct Movement {};
 }
 
 namespace res {

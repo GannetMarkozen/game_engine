@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core_include.hpp"
 #include "fmt/format.h"
 #include "thread_safe_types.hpp"
 #include "utils.hpp"

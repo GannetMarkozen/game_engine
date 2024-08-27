@@ -26,6 +26,8 @@ struct hash<ArchetypeDesc> {
 
 struct EXPORT_API Archetype {
 	struct Chunk;
+
+	// @TODO: Find a good value for this. 1024 * 128 is what Mass Entity uses.
 	static constexpr usize BYTES_PER_CHUNK = 1024 * 64 - sizeof(UniquePtr<Chunk>);
 
 	struct CompInfo {

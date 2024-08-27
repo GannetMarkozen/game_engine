@@ -1,12 +1,12 @@
 #pragma once
 
+#include "types.hpp"
+#include "assert.hpp"
 #include "static_reflection.hpp"
 #include "serialization.hpp"
 #include "memory.hpp"
-#include "math.hpp"
 
 #include <concepts>
-#include <thread>
 
 namespace rtti {
 struct TypeInfo;
@@ -32,7 +32,7 @@ DECLARE_ENUM_CLASS_FLAGS(rtti::Flags);
 
 namespace rtti {
 enum class Type : u8 {
-	STRUCT, ENUM, FUNDAMENTAL,
+	STRUCT, ENUM, FUNDAMENTAL, PTR,
 };
 
 struct Attribute {
@@ -96,6 +96,8 @@ EXPORT_API inline const TypeInfo TYPE_INFO{
 			return Type::ENUM;
 		} else if constexpr (cpts::Fundamental<T>) {
 			return Type::FUNDAMENTAL;
+		} else if constexpr (std::is_pointer_v<T>) {
+			return Type::PTR;
 		} else {
 			static_assert(false, "Unknown class of type!");
 		}

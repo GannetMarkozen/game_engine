@@ -1,5 +1,4 @@
-#include "ecs/app.hpp"
-#include "gameplay_framework.hpp"
+#include "core_include.hpp"
 #include "default_plugins.hpp"
 
 struct SomeSystem {
@@ -27,4 +26,6 @@ auto main() -> int {
 		.register_plugin(DefaultPlugins{})
 		.register_system<SomeSystem>()
 		.run();
+
+	std::this_thread::sleep_for(std::chrono::seconds{5});
 }

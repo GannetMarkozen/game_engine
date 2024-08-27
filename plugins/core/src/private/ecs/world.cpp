@@ -48,7 +48,7 @@ auto World::dispatch_event(const EventId event) -> void {
 	Array<Array<SharedPtr<Task>>> system_prerequisites;
 	system_prerequisites.reserve(event_systems.mask.count_set_bits());
 
-	ScopeLock lock{system_tasks_mutex};
+	ScopeLock _{system_tasks_mutex};
 
 	app.event_system_prerequisites[event].for_each([&](const SystemId id) {
 		auto task = system_tasks[id].lock();
@@ -183,8 +183,10 @@ auto World::dispatch_event(const EventId event) -> void {
 
 		// Schedule against exclusives.
 		app.concurrent_conflicting_systems[id].for_each([&](const SystemId conflicting_id) {
-			Task::add_exclusive(system_tasks[id].lock(), system_tasks[conflicting_id].lock());
-			fmt::println("{} != {}", get_type_info(id).name, get_type_info(conflicting_id).name);
+			if (const auto conflicting_task = system_tasks[conflicting_id].lock()) {
+				Task::add_exclusive(system_tasks[id].lock(), conflicting_task);
+				fmt::println("{} != {}", get_type_info(id).name, get_type_info(conflicting_id).name);
+			}
 		});
 	});
 

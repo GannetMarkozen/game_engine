@@ -149,24 +149,24 @@ struct App {
 		return *this;
 	}
 
-	template <typename T>
-	auto insert_resource(T&& resource) -> App& {
-		resource_factories[get_res_id<std::decay_t<T>>()] = [resource = std::move(resource)] -> void* {
-			return new std::decay_t<T>{resource};
-		};
-#if ASSERTIONS_ENABLED
-		registered_resources.add<std::decay_t<T>>();
-#endif
-		return *this;
-	}
-
 	template <typename T, typename... Args> requires std::constructible_from<T, const Args&...>
-	auto insert_resource(Args&&... args) -> App& {
+	auto register_resource(Args&&... args) -> App& {
 		resource_factories[get_res_id<T>()] = std::bind([](const Args&... args) -> void* {
 			return new T{args...};
 		}, std::forward<Args>(args)...);
 #if ASSERTIONS_ENABLED
 		registered_resources.add<T>();
+#endif
+		return *this;
+	}
+
+	template <typename T>
+	auto register_resource(T&& resource) -> App& {
+		resource_factories[get_res_id<std::decay_t<T>>()] = [resource = std::forward<T>(resource)] -> void* {
+			return new std::decay_t<T>{resource};
+		};
+#if ASSERTIONS_ENABLED
+		registered_resources.add<std::decay_t<T>>();
 #endif
 		return *this;
 	}

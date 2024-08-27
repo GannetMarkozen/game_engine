@@ -79,28 +79,12 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/SanderMertens/flecs.git
     GIT_TAG master
 )
-FetchContent_Declare(
-    VulkanHeaders
-    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
-    GIT_TAG v1.3.266
-)
 FetchContent_MakeAvailable(glm)
 FetchContent_MakeAvailable(flecs)
-FetchContent_MakeAvailable(VulkanHeaders)
 
-if (NOT DEFINED ENV{VULKAN_SDK})
-    message(FATAL_ERROR "VULKAN_SDK environment variable not set! Download Vulkan SDK v1.3.266.")
-endif()
+# TMP: Disable warnings from strncpy in vulkan.hpp.
+add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 
-set(VULKAN_SDK "$ENV{VULKAN_SDK}")
-
-link_directories("${VULKAN_SDK}/Lib")
-find_package(Vulkan REQUIRED)
-
-target_include_directories(game_engine
-    PUBLIC src/public
-    PRIVATE src/private
-)
 # Plugins.
 add_subdirectory(plugins/core)
 add_subdirectory(plugins/default_plugins)
@@ -111,7 +95,6 @@ target_link_libraries(game_engine
     # Third-party.
 	#PRIVATE glm::glm
     PRIVATE flecs_static
-	PRIVATE Vulkan::Vulkan
 
     PRIVATE default_plugins
 )
