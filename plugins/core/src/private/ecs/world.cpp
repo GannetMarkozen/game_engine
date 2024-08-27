@@ -34,7 +34,12 @@ auto World::run() -> void {
 
 	dispatch_event<event::OnInit>();
 
-	task::do_work_until_all_tasks_complete([&] { return is_pending_destruction; });
+	//task::do_work_until_all_tasks_complete([&] { return is_pending_destruction; });
+
+	// @TMP: This will not work with multiple worlds. Need to make the task system automatically exit when all threads have no work to do.
+	task::do_work_until_all_tasks_complete();
+
+	task::pending_shutdown = true;
 }
 
 auto World::dispatch_event(const EventId event) -> void {

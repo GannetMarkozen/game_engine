@@ -8,6 +8,7 @@ auto GameplayFrameworkPlugin::init(App& app) const -> void {
 			.within = GroupId::invalid_id(),
 			.after = GroupMask::make<group::GameFrame>(),
 		})
+		.register_group<group::Movement>()// @TODO: Implement.
 		// Kicks off OnUpdate loop after OnInit event.
 		.register_system<gameplay_framework::BeginUpdateLoopSystem>(SystemDesc{
 			.group = get_group_id<group::EndGameFrame>(),

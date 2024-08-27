@@ -16,6 +16,10 @@ struct WindowConfig {
 		usize height = 1080;
 	} extent;
 };
+
+struct IsRendering {
+	bool value = false;
+};
 }
 
 namespace group {
