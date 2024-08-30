@@ -6,9 +6,46 @@
 #include "utils.hpp"
 #include "defaults.hpp"
 #include "threading/task.hpp"
+
 struct App;
+template <typename...> struct Query;
+
+// A wrapper around a reference to a resource. Use as system argument to
+// automatically acquire the resource and generate access requirements.
+template <typename T>
+struct Res {
+	using Type = T;
+
+	constexpr Res() = default;
+	constexpr Res(const Res&) = default;
+	constexpr auto operator=(const Res&) -> Res& = default;
+
+	constexpr explicit Res(T& [[clang::lifetimebound]] value)
+		: value{&value} {}
+
+	[[nodiscard]] constexpr auto get() const -> T& { return *value; }
+	[[nodiscard]] constexpr auto operator*() const -> T& { return *value; }
+	[[nodiscard]] constexpr auto operator->() const -> T* { return value; }
+
+private:
+	T* [[clang::lifetimebound]] value;
+};
+
+namespace impl {
+template <typename> struct IsQuery { static constexpr bool VALUE = false; };
+template <typename... Comps> struct IsQuery<Query<Comps...>> { static constexpr bool VALUE = true; };
+
+template <typename> struct IsRes { static constexpr bool VALUE = false; };
+template <typename T> struct IsRes<Res<T>> { static constexpr bool VALUE = true; };
+}
 
 namespace cpts {
+template <typename... Comps>
+concept Query = ::impl::IsQuery<Comps...>::VALUE;
+
+template <typename T>
+concept Res = ::impl::IsRes<T>::VALUE;
+
 template <typename T>
 concept Plugin = requires (T t, App& app) {
 	t.init(app);
@@ -147,6 +184,94 @@ struct App {
 		};
 
 		return *this;
+	}
+
+	// @NOTE: Super evil. Parses raw function arguments and creates a system representing those arguments as members (with Res<> being an exception). Closer matches Bevy syntax.
+	template <auto FN>
+	struct FnSystem {
+		using RawArgs = typename utils::FnSig<decltype(FN)>::ArgTypes;
+
+		static_assert(std::convertible_to<ExecContext&, utils::TypeAtIndexInContainer<0, RawArgs>>, "System must have ExecContext& as it's first argument!");
+
+		// System args excluding ExecContext.
+		using Args = std::decay_t<decltype(utils::make_index_sequence_param_pack<std::tuple_size_v<RawArgs> - 1>([]<usize... Is> {
+			return Tuple<std::decay_t<utils::TypeAtIndexInContainer<Is + 1, RawArgs>>...>{};
+		}))>;
+
+		// Resources will be retrieved, every other argument will become a member.
+		using Members = utils::FilterContainer<[]<typename T> { return !cpts::Res<std::decay_t<T>>; }, Args>;
+
+		// Parses arguments and detects access requirements.
+		[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
+			AccessRequirements out;
+
+			[&]<usize I>(this auto&& self) -> void {
+				if constexpr (I < std::tuple_size_v<Args>) {
+					using T = utils::TypeAtIndexInContainer<I, Args>;
+
+					if constexpr (cpts::Query<std::decay_t<T>>) {// Parse query components access.
+						using Comps = typename std::decay_t<T>::Types;
+						[&]<usize COMP_INDEX>(this auto&& self) -> void {
+							if constexpr (COMP_INDEX < std::tuple_size_v<Comps>) {
+								using Comp = utils::TypeAtIndexInContainer<COMP_INDEX, Comps>;
+
+								if constexpr (std::is_const_v<Comp>) {
+									out.comps.reads.add<std::decay_t<Comp>>();
+								} else {
+									out.comps.writes.add<std::decay_t<Comp>>();
+								}
+
+								self.template operator()<COMP_INDEX + 1>();
+							}
+						}.template operator()<0>();
+					} else if constexpr (cpts::Res<std::decay_t<T>>) {// Parse resource access.
+						using Res = typename T::Type;
+
+						if constexpr (std::is_const_v<Res>) {
+							out.resources.reads.add<std::decay_t<Res>>();
+						} else {
+							out.resources.writes.add<std::decay_t<Res>>();
+						}
+					}
+
+					self.template operator()<I + 1>();
+				}
+			}.template operator()<0>();
+
+			return out;
+		}
+
+		auto execute(ExecContext& context) -> void {
+			utils::make_index_sequence_param_pack<std::tuple_size_v<Args>>([&]<usize... Is> {
+				std::invoke(FN, context, [&] -> decltype(auto) {
+					using T = utils::TypeAtIndexInContainer<Is, Args>;
+					if constexpr (cpts::Res<std::decay_t<T>>) {
+						using UnderlyingType = typename T::Type;
+						if constexpr (std::is_const_v<UnderlyingType>) {
+							return Res<UnderlyingType>{context.get_res<std::decay_t<UnderlyingType>>()};
+						} else {
+							return Res<UnderlyingType>{context.get_mut_res<std::decay_t<UnderlyingType>>()};
+						}
+					} else {
+						static constexpr usize INDEX = [] consteval {
+							usize count = 0;
+							static constexpr usize I = Is;
+							((count += Is < I && !cpts::Res<std::decay_t<utils::TypeAtIndexInContainer<Is, Args>>>), ...);
+							return count;
+						}();
+
+						return (std::get<INDEX>(args));
+					}
+				}()...);
+			});
+		}
+
+		NO_UNIQUE_ADDRESS Members args = {};
+	};
+
+	template <auto FN>
+	auto register_system(SystemDesc desc = {}) -> App& {
+		return register_system<FnSystem<FN>>(std::move(desc));
 	}
 
 	template <typename T, typename... Args> requires std::constructible_from<T, const Args&...>

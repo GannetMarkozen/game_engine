@@ -2,6 +2,7 @@
 #include "default_plugins.hpp"
 #include "vulkan/vulkan_core.h"
 
+#if 0
 struct SomeSystem {
 	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
 		return {
@@ -21,12 +22,28 @@ struct SomeSystem {
 
 	usize count = 0;
 };
+#endif
+
+using res::RequestExit;
+
+auto some_system(ExecContext& context, usize& count, i32& something, Query<const u64>& query, const Res<RequestExit> request_exit) -> void {
+	//fmt::println("Executing {} for {}", count, context.currently_executing_system);
+
+	fmt::println("count == {}", count);
+
+	if (++count >= 10000) {
+		request_exit->value = true;
+	}
+}
 
 auto main() -> int {
 	App::build()
 		.register_plugin(DefaultPlugins{})
-		.register_system<SomeSystem>()
+		.register_system<some_system>()
 		.run();
+
+	using Members = App::FnSystem<some_system>::Members;
+	static constexpr auto THING = std::tuple_size_v<Members>;
 
 	fmt::println("EXITING!");
 

@@ -289,4 +289,38 @@ struct FnSig<Return(Class::*)(Args...) const> {
 
 template <typename T> requires requires { &T::operator(); }
 struct FnSig<T> : public FnSig<decltype(&T::operator())> {};
+
+namespace impl {
+template <auto, typename...>
+struct Filter;
+
+template <auto PREDICATE, typename T, typename... Ts>
+struct Filter<PREDICATE, T, Ts...> {
+	using Types = std::conditional_t<PREDICATE.template operator()<T>(), ::utils::Concat<Tuple<T>, typename Filter<PREDICATE, Ts...>::Types>, typename Filter<PREDICATE, Ts...>::Types>;
+};
+
+template <auto PREDICATE, typename T>
+struct Filter<PREDICATE, T> {
+	using Types = std::conditional_t<PREDICATE.template operator()<T>(), Tuple<T>, Tuple<>>;
+};
+
+template <auto PREDICATE>
+struct Filter<PREDICATE> {
+	using Types = Tuple<>;
+};
+
+template <auto, typename>
+struct FilterContainer;
+
+template <auto PREDICATE, template <typename...> typename Container, typename... Ts>
+struct FilterContainer<PREDICATE, Container<Ts...>> {
+	using Types = typename Filter<PREDICATE, Ts...>::Types;
+};
+}
+
+template <auto PREDICATE, typename... Ts>
+using Filter = typename impl::Filter<PREDICATE, Ts...>::Types;
+
+template <auto PREDICATE, typename T>
+using FilterContainer = typename impl::FilterContainer<PREDICATE, T>::Types;
 }

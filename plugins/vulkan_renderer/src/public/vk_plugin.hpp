@@ -14,6 +14,8 @@ struct WindowConfig {
 		usize width = 1920;
 		usize height = 1080;
 	} extent;
+
+	VkPresentModeKHR present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
 };
 
 namespace res {
@@ -29,7 +31,6 @@ struct RenderShutdown {};
 
 struct VkPlugin {
 	WindowConfig window_config;
-	VkPresentModeKHR present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
 
 	auto init(App& app) -> void;
 };

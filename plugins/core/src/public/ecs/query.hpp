@@ -3,8 +3,10 @@
 #include "world.hpp"
 
 // An efficient mechanism for iterating for entities / components matching a composition. Caches matching archetypes for maximal efficiency.
-template <typename... Comps> requires (!std::is_empty_v<Comps> && ...)
+template <typename... Comps>
 struct Query {
+	using Types = Tuple<Comps...>;
+
 	auto for_each_view(const ExecContext& context, ::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn) -> void {
 		assert_has_valid_access_requirements(context);
 

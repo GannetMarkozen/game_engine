@@ -422,3 +422,18 @@ using SizedUnsignedIntegral = std::conditional_t<
 	(N <= 8), u8, std::conditional_t<
 	(N <= 16), u16, std::conditional_t<
 	(N <= 32), u32, u64>>>;
+
+// Wrapper around a type.
+template <typename T>
+struct Wrapper : public T {
+	using T::T;
+
+	using Type = T;
+
+	[[nodiscard]] constexpr auto operator->() -> T* { return static_cast<T*>(this); }
+	[[nodiscard]] constexpr auto operator->() const -> const T* { return static_cast<const T*>(this); }
+	[[nodiscard]] constexpr auto operator*() -> T& { return *static_cast<T*>(this); }
+	[[nodiscard]] constexpr auto operator*() const -> const T& { return *static_cast<const T*>(this); }
+	[[nodiscard]] constexpr auto get() -> T& { return *static_cast<T*>(this); }
+	[[nodiscard]] constexpr auto get() const -> const T& { return *static_cast<const T*>(this); }
+};

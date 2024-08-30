@@ -834,33 +834,6 @@ inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> au
 		}
 	}
 
-#if 0
-	num_tasks_in_flight += count + 1;
-
-	volatile bool tasks_complete = false;
-
-	SharedPtr<Task> subsequent = Task::make([&, this_thread_id = thread::get_this_thread_id()](const SharedPtr<Task>&) {
-		tasks_complete = true;
-		wake_up_thread(this_thread_id);
-	}, Priority::HIGH, Thread::ANY);
-
-	subsequent->prerequisites_remaining = count;
-
-	for (usize i = 0; i < count; ++i) {
-		SharedPtr<Task> task = Task::make([&, i] {
-			std::invoke(FORWARD_AUTO(fn), i);
-		}, Priority::HIGH, Thread::ANY);
-		task->subsequents.enqueue(subsequent);
-
-		queues[static_cast<u8>(Thread::ANY)][static_cast<u8>(Priority::HIGH)]->enqueue(std::move(task));
-	}
-
-	// Wake up threads (-1 since we are including this thread).
-	wake_up_threads(Thread::ANY, count - 1);
-
-	do_work([&] { return tasks_complete; });
-#else
-
 	Atomic<usize> num_tasks_remaining = count;
 
 	for (usize i = 0; i < count; ++i) {
@@ -880,7 +853,6 @@ inline auto parallel_for_unbalanced(const usize count, cpts::Invokable<usize> au
 	wake_up_threads(Thread::ANY, count);
 
 	do_work([&] { return !num_tasks_remaining.load(std::memory_order_relaxed); });
-#endif
 }
 
 // Creates a task per-thread for minimal task overhead.
