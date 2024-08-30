@@ -190,7 +190,6 @@ auto World::dispatch_event(const EventId event) -> void {
 		app.concurrent_conflicting_systems[id].for_each([&](const SystemId conflicting_id) {
 			if (const auto conflicting_task = system_tasks[conflicting_id].lock()) {
 				Task::add_exclusive(system_tasks[id].lock(), conflicting_task);
-				fmt::println("{} != {}", get_type_info(id).name, get_type_info(conflicting_id).name);
 			}
 		});
 	});

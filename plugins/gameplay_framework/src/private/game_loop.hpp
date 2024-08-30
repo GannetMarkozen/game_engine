@@ -18,7 +18,6 @@ struct EndFrameSystem {
 	auto execute(ExecContext& context) const -> void {
 		const auto request_exit = context.get_res<res::RequestExit>().value;
 		if (!request_exit) {// Dispatch the OnUpdate event so long as RequestExit is false.
-			//std::this_thread::sleep_for(std::chrono::milliseconds{10});// @TMP:
 			context.world.dispatch_event<event::OnUpdate>();
 		} else {// Dispatch OnShutdown event. Final event before the App exits.
 			WARN("Dispatching Shutdown!");

@@ -149,8 +149,6 @@ struct VkEngine {
 	}
 
 	auto draw() -> void {
-		WARN("Drawing {}", current_frame_count);
-
 		auto& current_frame = get_current_frame_data();
 
 		// Wait until the GPU has finished rendering the previous frame before attempting to draw the next frame.
@@ -177,7 +175,7 @@ struct VkEngine {
 		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
 		VkClearColorValue clear_color;
-		const auto flash = std::abs(std::sin(static_cast<f32>(current_frame_count) / 120));
+		const auto flash = std::abs(std::sin(static_cast<f32>(current_frame_count) / 120.f));
 		clear_color = {{0.f, 0.f, flash, 1.f}};
 
 		// All mips.
@@ -429,8 +427,6 @@ auto draw(ExecContext& context, Res<VkEngine> engine, Res<IsRendering> is_render
 		}
 	}
 
-	fmt::println("IsRendering == {}", is_rendering->value);
-
 	if (!is_rendering->value) {// Window is minimized or something.
 		std::this_thread::sleep_for(std::chrono::milliseconds{100});// @TODO: Implement actual frame-pacing.
 		return;
@@ -472,7 +468,7 @@ auto VkPlugin::init(App& app) -> void {
 			.group = get_group_id<group::RenderFrame>(),
 			.event = get_event_id<event::OnUpdate>(),
 			.priority = Priority::HIGH,
-			.thread = Thread::ANY,
+			.thread = Thread::MAIN,
 		})
 		.register_system<vk::shutdown>(SystemDesc{
 			.group = get_group_id<group::RenderShutdown>(),
