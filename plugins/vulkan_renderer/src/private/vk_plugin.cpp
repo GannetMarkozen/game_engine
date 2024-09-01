@@ -1,5 +1,6 @@
 #include "vk_plugin.hpp"
 
+#define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -9,15 +10,41 @@
 #include "defines.hpp"
 #include "ecs/app.hpp"
 #include "gameplay_framework.hpp"
+#include "vulkan/vulkan_core.h"
 // @TMP: All of this is tmp until I can come up with better abstractions.
 
-// Asserts if the command being executed does not result in VK_SUCCESS.
+// Asserts if the command being executed does not result in VK_SUCCESS. Only checks in Debug builds.
 #define VK_VERIFY(CMD) { \
-		const auto vk_result = CMD; \
+		[[maybe_unused]] const VkResult vk_result = CMD; \
 		ASSERTF(vk_result == VK_SUCCESS, "{} != VK_SUCCESS!", #CMD); \
- }
+	}
 
-static_assert(null == VK_NULL_HANDLE);
+static_assert(std::same_as<decltype(null), decltype(VK_NULL_HANDLE)>);
+
+// @NOTE: This is suboptimal.
+struct DeletionQueue {
+	auto enqueue(Fn<void()>&& dtor) -> void {
+		dtors.push_back(std::move(dtor));
+	}
+
+	auto flush() -> void {
+		// Invoke dtors FIFO.
+		for (auto it = dtors.rbegin(); it != dtors.rend(); ++it) {
+			(*it)();
+		}
+		dtors.clear();
+	}
+
+	Array<Fn<void()>> dtors;
+};
+
+struct AllocatedImage {
+	VkImage image = null;
+	VkImageView image_view = null;
+	VmaAllocation allocation = null;
+	VkExtent3D extent = {};
+	VkFormat format;
+};
 
 struct FrameData {
 	VkCommandPool command_pool = null;
@@ -26,12 +53,98 @@ struct FrameData {
 	VkSemaphore swapchain_semaphore = null;
 	VkSemaphore render_semaphore = null;
 	VkFence render_fence = null;
+
+	DeletionQueue deletion_queue;
 };
 
 // Number of frames in-flight.
 static constexpr usize FRAMES_IN_FLIGHT_COUNT = 2;
 
+namespace vkinit {
+static auto make_image_create_info(const VkFormat format, const VkImageUsageFlags usage_flags, const VkExtent3D extent) -> VkImageCreateInfo {
+	return {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = format,
+		.extent = extent,
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,// MSAA count.
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = usage_flags,
+	};
+}
+
+static auto make_image_view_create_info(const VkFormat format, const VkImage image, const VkImageAspectFlags aspect_flags) -> VkImageViewCreateInfo {
+	ASSERT(image);
+	return {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image = image,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = format,
+		.subresourceRange{
+			.aspectMask = aspect_flags,
+			.baseMipLevel = 0,
+			.levelCount = 1,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+	};
+}
+}
+
 namespace vkutils {
+static auto copy_image_to_image(VkCommandBuffer cmd, VkImage src, VkImage dst, const VkExtent2D& src_extent, const VkExtent2D& dst_extent) -> void {
+	const VkImageBlit2 blit_region{
+		.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+		.srcSubresource{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+		.srcOffsets{
+			VkOffset3D{
+				0, 0, 0,
+			},
+			VkOffset3D{
+				.x = static_cast<i32>(src_extent.width),
+				.y = static_cast<i32>(src_extent.height),
+				.z = 1,
+			},
+		},
+		.dstSubresource{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.mipLevel = 0,
+			.baseArrayLayer = 0,
+			.layerCount = 1,
+		},
+		.dstOffsets{
+			VkOffset3D{
+				0, 0, 0,
+			},
+			VkOffset3D{
+				.x = static_cast<i32>(dst_extent.width),
+				.y = static_cast<i32>(dst_extent.height),
+				.z = 1,
+			},
+		},
+	};
+
+	const VkBlitImageInfo2 blit_info{
+		.sType = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+		.srcImage = src,
+		.srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		.dstImage = dst,
+		.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+		.regionCount = 1,
+		.pRegions = &blit_region,
+		.filter = VK_FILTER_LINEAR,
+	};
+
+	vkCmdBlitImage2(cmd, &blit_info);
+}
+
 // @NOTE: VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT is slow. It will do a large amount of stalling.
 static auto transition_image_layout(VkCommandBuffer cmd, VkImage image, const VkImageLayout current_layout, const VkImageLayout new_layout) -> void {
 	// Special case for transitioning to depth texture.
@@ -74,6 +187,84 @@ struct VkEngine {
 		return self.frames[self.current_frame_count % FRAMES_IN_FLIGHT_COUNT];
 	}
 
+	auto init(this VkEngine& self, const WindowConfig& window_config) -> void {
+		self.window = SDL_CreateWindow(window_config.title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, window_config.extent.width, window_config.extent.height, SDL_WINDOW_VULKAN);
+
+		// Create vk instance.
+		vkb::InstanceBuilder instance_builder;
+
+		auto instance = instance_builder
+			.set_app_name("GanEngine")
+			.request_validation_layers(DEBUG_BUILD)// Enable validation layers in debug-builds.
+			.use_default_debug_messenger()
+			.require_api_version(1, 3, 0)
+			.build()
+			.value();
+
+		self.instance = instance.instance;
+		self.debug_messenger = instance.debug_messenger;
+
+		ASSERT(self.instance);
+		ASSERT(self.debug_messenger);
+
+		// Create surface to render to.
+		ASSERT(!self.surface);
+		SDL_Vulkan_CreateSurface(self.window, self.instance, &self.surface);
+		ASSERT(self.surface);
+
+		const VkPhysicalDeviceVulkan13Features features_1_3{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+			.synchronization2 = VK_TRUE,
+			.dynamicRendering = VK_TRUE,
+		};
+
+		const VkPhysicalDeviceVulkan12Features features_1_2{
+			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+			.descriptorIndexing = VK_TRUE,
+			.bufferDeviceAddress = VK_TRUE,
+		};
+
+		// Let vkb select the most appropriate GPU.
+		vkb::PhysicalDeviceSelector selector{instance};
+		vkb::PhysicalDevice physical_device = selector
+			.set_minimum_version(1, 3)
+			.set_required_features_13(features_1_3)
+			.set_required_features_12(features_1_2)
+			.set_surface(self.surface)
+			.select()
+			.value();
+
+		vkb::DeviceBuilder device_builder{physical_device};
+		vkb::Device device = device_builder.build().value();
+
+		self.physical_device = physical_device.physical_device;
+		self.device = device.device;
+
+		// Init allocator.
+		const VmaAllocatorCreateInfo alloc_create_info{
+			.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+			.physicalDevice = self.physical_device,
+			.device = self.device,
+			.instance = self.instance,
+		};
+
+		VK_VERIFY(vmaCreateAllocator(&alloc_create_info, &self.allocator));
+
+		self.deletion_queue.enqueue([&self] {
+			vmaDestroyAllocator(self.allocator);
+		});
+
+		// Create swapchain.
+		self.create_swapchain(window_config);
+
+		// Get the graphics queue.
+		self.graphics_queue = device.get_queue(vkb::QueueType::graphics).value();
+		self.graphics_queue_family = device.get_queue_index(vkb::QueueType::graphics).value();
+
+		// Init commands.
+		self.init_commands();
+	}
+
 	auto create_swapchain(const WindowConfig& window_config) -> void {
 		ASSERT(!swapchain);
 
@@ -96,6 +287,42 @@ struct VkEngine {
 		swapchain = vkb_swapchain.swapchain;
 		swapchain_images = vkb_swapchain.get_images().value();
 		swapchain_image_views = vkb_swapchain.get_image_views().value();
+
+		// Assign extents.
+		swapchain_extent.width = window_config.extent.width;
+		swapchain_extent.height = window_config.extent.height;
+
+		// Create draw image.
+		const VkExtent3D draw_extent_3d{
+			static_cast<u32>(window_config.extent.width),
+			static_cast<u32>(window_config.extent.height),
+			1,
+		};
+
+		draw_image.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+		draw_image.extent = draw_extent_3d;
+
+		static constexpr auto USAGE_FLAGS = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		const VkImageCreateInfo image_create_info = vkinit::make_image_create_info(draw_image.format, USAGE_FLAGS, draw_image.extent);
+
+		const VmaAllocationCreateInfo alloc_info{
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+			.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+		};
+
+		// Allocate and create the image.
+		ASSERT(allocator);
+		vmaCreateImage(allocator, &image_create_info, &alloc_info, &draw_image.image, &draw_image.allocation, null);
+
+		const VkImageViewCreateInfo image_view_create_info = vkinit::make_image_view_create_info(draw_image.format, draw_image.image, VK_IMAGE_ASPECT_COLOR_BIT);
+
+		VK_VERIFY(vkCreateImageView(device, &image_view_create_info, null, &draw_image.image_view));
+
+		// Add to deletion queue.
+		deletion_queue.enqueue([this] {
+			vkDestroyImageView(device, draw_image.image_view, null);
+			vmaDestroyImage(allocator, draw_image.image, draw_image.allocation);
+		});
 	}
 
 	auto destroy_swapchain() -> void {
@@ -148,12 +375,35 @@ struct VkEngine {
 		}
 	}
 
+	auto draw_background(VkCommandBuffer cmd) -> void {
+		VkClearColorValue clear_color;
+		const auto flash = std::abs(std::sin(static_cast<f32>(current_frame_count) / 120.f));
+		clear_color = {{0.f, 0.f, flash, 1.f}};
+
+		// All mips.
+		const VkImageSubresourceRange clear_range{
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = 0,
+			.levelCount = VK_REMAINING_MIP_LEVELS,
+			.baseArrayLayer = 0,
+			.layerCount = VK_REMAINING_ARRAY_LAYERS,
+		};
+
+		// Clear the image.
+		vkCmdClearColorImage(cmd, draw_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
+	}
+
+#define USE_DRAW_IMAGE 1
+
 	auto draw() -> void {
 		auto& current_frame = get_current_frame_data();
 
 		// Wait until the GPU has finished rendering the previous frame before attempting to draw the next frame.
 		VK_VERIFY(vkWaitForFences(device, 1, &current_frame.render_fence, true, UINT64_MAX));
 		VK_VERIFY(vkResetFences(device, 1, &current_frame.render_fence));// Reset after waiting.
+
+		// Flush resources pending deletion after previous-frame has finished presenting.
+		current_frame.deletion_queue.flush();
 
 		u32 swapchain_image_index;
 		VK_VERIFY(vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, current_frame.swapchain_semaphore, null, &swapchain_image_index));
@@ -169,29 +419,27 @@ struct VkEngine {
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 		};
 
+		draw_extent.width = draw_image.extent.width;
+		draw_extent.height = draw_image.extent.height;
+
 		VK_VERIFY(vkBeginCommandBuffer(cmd, &cmd_begin_info));
 
 		// Make the swapchain image writeable before rendering to it.
-		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		//vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
-		VkClearColorValue clear_color;
-		const auto flash = std::abs(std::sin(static_cast<f32>(current_frame_count) / 120.f));
-		clear_color = {{0.f, 0.f, flash, 1.f}};
+		vkutils::transition_image_layout(cmd, draw_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 
-		// All mips.
-		const VkImageSubresourceRange clear_range{
-			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-			.baseMipLevel = 0,
-			.levelCount = VK_REMAINING_MIP_LEVELS,
-			.baseArrayLayer = 0,
-			.layerCount = VK_REMAINING_ARRAY_LAYERS,
-		};
+		draw_background(cmd);
 
-		// Clear the image.
-		vkCmdClearColorImage(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
+		vkutils::transition_image_layout(cmd, draw_image.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		vkutils::copy_image_to_image(cmd, draw_image.image, swapchain_images[swapchain_image_index], draw_extent, swapchain_extent);
+
+		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 		// Make swapchain presentable.
-		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+		//vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 		// Finalize the command buffer.
 		VK_VERIFY(vkEndCommandBuffer(cmd));
@@ -267,6 +515,9 @@ struct VkEngine {
 			frames[i].swapchain_semaphore = null;
 		}
 
+		// Flush global deletion-queue.
+		deletion_queue.flush();
+
 		destroy_swapchain();
 
 		vkDestroySurfaceKHR(instance, surface, null);
@@ -308,6 +559,14 @@ struct VkEngine {
 
 	VkQueue graphics_queue = null;
 	u32 graphics_queue_family = std::numeric_limits<u32>::max();
+
+	VmaAllocator allocator = null;
+
+	// Draw resources.
+	AllocatedImage draw_image;
+	VkExtent2D draw_extent;
+
+	DeletionQueue deletion_queue;
 };
 }
 
@@ -333,67 +592,7 @@ struct InitSystem {
 
 		auto& engine = context.get_mut_res<res::VkEngine>();
 
-		engine.window = SDL_CreateWindow(window_config.title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, window_config.extent.width, window_config.extent.height, SDL_WINDOW_VULKAN);
-
-		// Create vk instance.
-		vkb::InstanceBuilder instance_builder;
-
-		auto instance = instance_builder
-			.set_app_name("GanEngine")
-			.request_validation_layers(DEBUG_BUILD)// Enable validation layers in debug-builds.
-			.use_default_debug_messenger()
-			.require_api_version(1, 3, 0)
-			.build()
-			.value();
-
-		engine.instance = instance.instance;
-		engine.debug_messenger = instance.debug_messenger;
-
-		ASSERT(engine.instance);
-		ASSERT(engine.debug_messenger);
-
-		// Create surface to render to.
-		ASSERT(!engine.surface);
-		SDL_Vulkan_CreateSurface(engine.window, engine.instance, &engine.surface);
-		ASSERT(engine.surface);
-
-		const VkPhysicalDeviceVulkan13Features features_1_3{
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-			.synchronization2 = VK_TRUE,
-			.dynamicRendering = VK_TRUE,
-		};
-
-		const VkPhysicalDeviceVulkan12Features features_1_2{
-			.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-			.descriptorIndexing = VK_TRUE,
-			.bufferDeviceAddress = VK_TRUE,
-		};
-
-		// Let vkb select the most appropriate GPU.
-		vkb::PhysicalDeviceSelector selector{instance};
-		vkb::PhysicalDevice physical_device = selector
-			.set_minimum_version(1, 3)
-			.set_required_features_13(features_1_3)
-			.set_required_features_12(features_1_2)
-			.set_surface(engine.surface)
-			.select()
-			.value();
-
-		vkb::DeviceBuilder device_builder{physical_device};
-		vkb::Device device = device_builder.build().value();
-
-		engine.physical_device = physical_device.physical_device;
-		engine.device = device.device;
-
-		// Create swapchain.
-		engine.create_swapchain(window_config);
-
-		// Get the graphics queue.
-		engine.graphics_queue = device.get_queue(vkb::QueueType::graphics).value();
-		engine.graphics_queue_family = device.get_queue_index(vkb::QueueType::graphics).value();
-
-		// Init commands.
-		engine.init_commands();
+		engine.init(window_config);
 
 		// Begin rendering.
 		context.get_mut_res<res::IsRendering>().value = true;
@@ -468,6 +667,7 @@ auto VkPlugin::init(App& app) -> void {
 			.group = get_group_id<group::RenderFrame>(),
 			.event = get_event_id<event::OnUpdate>(),
 			.priority = Priority::HIGH,
+			// NOTE: Command pool is only thread safe to write to on the thread it is created on. Should either create a RenderThread or create thread-local command pools.
 			.thread = Thread::MAIN,
 		})
 		.register_system<vk::shutdown>(SystemDesc{
@@ -477,138 +677,3 @@ auto VkPlugin::init(App& app) -> void {
 			.thread = Thread::MAIN,
 		});
 }
-
-
-#if 0
-struct VkInitSystem {
-	explicit constexpr VkInitSystem(WindowConfig window_config)
-		: window_config{std::move(window_config)} {}
-
-	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
-		return {
-			.resources{
-				.writes = ResMask::make<res::VkEngine, res::IsRendering>(),
-			},
-		};
-	}
-
-	auto execute(ExecContext& context) -> void {
-		// Init SDL.
-		SDL_Init(SDL_INIT_VIDEO);
-
-		auto& engine = context.get_mut_res<res::VkEngine>();
-
-		static constexpr auto WINDOW_FLAGS = SDL_WINDOW_VULKAN;
-		engine.window = SDL_CreateWindow(window_config.title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, window_config.extent.width, window_config.extent.height, WINDOW_FLAGS);
-
-		// Create VkInstance.
-		context.get_mut_res<res::IsRendering>().value = true;// Begin rendering.
-	}
-
-	WindowConfig window_config;
-};
-
-struct VkDrawSystem {
-	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
-		return {
-			.resources{
-				.reads = ResMask::make<res::VkEngine>(),
-				.writes = ResMask::make<res::RequestExit, res::IsRendering>(),
-			},
-		};
-	}
-
-	auto execute(ExecContext& context) -> void {
-		auto& is_rendering = context.get_mut_res<res::IsRendering>().value;
-
-		// Handle SDL events.
-		{
-			SDL_Event event;
-			while (SDL_PollEvent(&event)) {
-				switch (event.type) {
-				case SDL_QUIT: {
-					context.get_mut_res<res::RequestExit>().value = true;
-					return;
-				}
-				case SDL_WINDOWEVENT: {
-					switch (event.window.event) {
-					case SDL_WINDOWEVENT_MINIMIZED:
-						is_rendering = false;
-						break;
-
-					case SDL_WINDOWEVENT_RESTORED:
-						is_rendering = true;
-						break;
-					}
-				}
-				}
-			}
-		}
-
-		fmt::println("IsRendering == {}", is_rendering);
-
-		if (!is_rendering) {// Window is minimized or something.
-			std::this_thread::sleep_for(std::chrono::milliseconds{100});// @TODO: Implement actual frame-pacing.
-			return;
-		}
-
-
-	}
-};
-
-struct VkShutdownSystem {
-	[[nodiscard]] static auto get_access_requirements() -> AccessRequirements {
-		return {
-			.resources{
-				.writes = ResMask::make<res::VkEngine>(),
-			},
-		};
-	}
-
-	auto execute(ExecContext& context) -> void {
-		fmt::println("Begin destroy window!");
-
-		auto& engine = context.get_mut_res<res::VkEngine>();
-
-		SDL_Quit();
-
-		SDL_DestroyWindow(engine.window);
-		engine.window = null;
-
-		fmt::println("Destroyed window!");
-	}
-};
-
-auto VkPlugin::init(App& app) -> void {
-	app
-		.register_resource<res::VkEngine>()
-		.register_resource<res::IsRendering>()
-		.register_group<group::RenderInit>(Ordering{
-			.within = GroupId::invalid_id(),
-		})
-		.register_group<group::RenderFrame>(Ordering{
-			.within = GroupId::invalid_id(),
-			.after = GroupMask::make<group::Movement>(),
-		})
-		.register_group<group::RenderShutdown>(Ordering{
-			.within = GroupId::invalid_id(),
-			.after = GroupMask::make<group::RenderInit>(),
-		})
-		.register_system<VkInitSystem>(SystemDesc{
-			.group = get_group_id<group::RenderInit>(),
-			.event = get_event_id<event::OnInit>(),
-			.priority = Priority::HIGH,
-			.thread = Thread::MAIN,// SDL must be initialized and destroyed on the same thread.
-		}, std::move(window_config))
-		.register_system<VkDrawSystem>(SystemDesc{
-			.group = get_group_id<group::RenderFrame>(),
-			.event = get_event_id<event::OnUpdate>(),
-			.priority = Priority::HIGH,
-		})
-		.register_system<VkShutdownSystem>(SystemDesc{
-			.group = get_group_id<group::RenderShutdown>(),
-			.event = get_event_id<event::OnShutdown>(),
-			.thread = Thread::MAIN,// SDL must be initialized and destroyed on the same thread.
-		});
-}
-#endif
