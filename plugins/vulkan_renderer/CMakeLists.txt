@@ -5,7 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party)
+set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set(THIRD_PARTY ${ROOT_DIR}/third_party)
 
 project(vulkan_renderer VERSION 1.0)
 
@@ -64,6 +65,34 @@ link_directories("${VULKAN_SDK}/Lib")
 find_package(Vulkan REQUIRED)
 
 add_subdirectory("third_party/vk-bootstrap")
+
+# Compile shader code.
+find_program(GLSL_VALIDATOR glslangValidator HINTS "usr/bin" "usr/local/bin" "${VULKAN_SDK}/Bin/" "${VULKAN_SDK}/Bin32/")
+
+set(SHADER_DIR ${ROOT_DIR}/shaders)
+file(GLOB_RECURSE GLSL_SOURCE_FILES
+	"${SHADER_DIR}/*.frag"
+	"${SHADER_DIR}/*.vert"
+	"${SHADER_DIR}/*.comp"
+)
+
+foreach (GLSL ${GLSL_SOURCE_FILES})
+	message(STATUS "COMPILING SHADER:")
+	get_filename_component(FILE_NAME ${GLSL} NAME)
+	set(SPIRV "${FILE_NAME}.spv")
+	message(STATUS ${GLSL})
+	add_custom_command(
+		OUTPUT ${SPIRV}
+		COMMAND ${GLSL_VALIDATOR} -V ${GLSL} -o ${SPIRV}
+		DEPENDS ${GLSL}
+	)
+	list(APPEND SPRIV_BINAY_FILES ${SPIRV})
+endforeach(GLSL)
+
+add_custom_target(
+	build_shaders
+	DEPENDS ${SPIRV_BINARY_FILES}
+)
 
 # Include Vulkan SDK directories.
 target_include_directories(vulkan_renderer

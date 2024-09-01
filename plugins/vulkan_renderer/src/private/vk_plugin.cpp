@@ -1,4 +1,6 @@
 #include "vk_plugin.hpp"
+#include <cstddef>
+#include <fstream>
 
 #define VMA_IMPLEMENTATION
 #include <vma/vk_mem_alloc.h>
@@ -57,6 +59,96 @@ struct FrameData {
 	DeletionQueue deletion_queue;
 };
 
+struct DescriptorLayoutBuilder {
+	constexpr auto add_binding(const u32 binding, const VkDescriptorType type) -> DescriptorLayoutBuilder& {
+		bindings.push_back(VkDescriptorSetLayoutBinding{
+			.binding = binding,
+			.descriptorType = type,
+			.descriptorCount = 1,
+		});
+
+		return *this;
+	}
+
+	constexpr auto clear() -> void {
+		bindings.clear();
+	}
+
+	[[nodiscard]] constexpr auto build(VkDevice device, const VkShaderStageFlags shader_stages, void* p_next = null, const VkDescriptorSetLayoutCreateFlags create_flags = 0) -> VkDescriptorSetLayout {
+		for (auto& binding : bindings) {
+			binding.stageFlags |= shader_stages;
+		}
+
+		const VkDescriptorSetLayoutCreateInfo create_info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.pNext = p_next,
+			.flags = create_flags,
+			.bindingCount = static_cast<u32>(bindings.size()),
+			.pBindings = bindings.data(),
+		};
+
+		VkDescriptorSetLayout out;
+		VK_VERIFY(vkCreateDescriptorSetLayout(device, &create_info, null, &out));
+
+		return out;
+	}
+
+	Array<VkDescriptorSetLayoutBinding> bindings;
+};
+
+struct DescriptorAllocator {
+	struct PoolSizeRatio {
+		VkDescriptorType type;
+		f32 ratio;
+	};
+
+	VkDescriptorPool pool;
+
+	auto init_pool(VkDevice device, const u32 max_sets, const Span<const PoolSizeRatio> pool_ratios) -> void {
+		Array<VkDescriptorPoolSize> pool_sizes;
+		pool_sizes.reserve(pool_ratios.size());
+		for (const PoolSizeRatio& pool_ratio : pool_ratios) {
+			pool_sizes.push_back(VkDescriptorPoolSize{
+				.type = pool_ratio.type,
+				.descriptorCount = static_cast<u32>(pool_ratio.ratio * max_sets),
+			});
+		}
+
+		const VkDescriptorPoolCreateInfo create_info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = max_sets,
+			.poolSizeCount = static_cast<u32>(pool_sizes.size()),
+			.pPoolSizes = pool_sizes.data(),
+		};
+
+		VK_VERIFY(vkCreateDescriptorPool(device, &create_info, null, &pool));
+	}
+
+	auto clear_descriptors(VkDevice device) -> void {
+		VK_VERIFY(vkResetDescriptorPool(device, pool, 0));
+	}
+
+	auto destroy_pool(VkDevice device) -> void {
+		vkDestroyDescriptorPool(device, pool, null);
+	}
+
+	[[nodiscard]] auto allocate(VkDevice device, VkDescriptorSetLayout layout) -> VkDescriptorSet {
+		ASSERT(layout);
+
+		const VkDescriptorSetAllocateInfo alloc_info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = pool,
+			.descriptorSetCount = 1,
+			.pSetLayouts = &layout,
+		};
+
+		VkDescriptorSet out;
+		VK_VERIFY(vkAllocateDescriptorSets(device, &alloc_info, &out));
+
+		return out;
+	}
+};
+
 // Number of frames in-flight.
 static constexpr usize FRAMES_IN_FLIGHT_COUNT = 2;
 
@@ -94,6 +186,37 @@ static auto make_image_view_create_info(const VkFormat format, const VkImage ima
 }
 
 namespace vkutils {
+static auto load_shader_module(const char* file_path, VkDevice device) -> VkShaderModule {
+	std::ifstream file{file_path, std::ios::ate | std::ios::binary};
+	ASSERTF(file.is_open(), "Failed to open file {}!", file_path);
+
+	const usize file_size = static_cast<usize>(file.tellg());
+
+	// Spir-V expects the buffer data as u32s.
+	Array<u32> buffer;
+	buffer.resize(math::divide_and_round_up(file_size, sizeof(u32)));
+	//buffer.reserve(math::divide_and_round_up(file_size, sizeof(u32)));
+
+	// Put file cursor at the beginning of the file.
+	file.seekg(0);
+
+	// Read the entire file into the buffer.
+	file.read(reinterpret_cast<char*>(buffer.data()), file_size);
+
+	file.close();
+
+	const VkShaderModuleCreateInfo shader_module_create_info{
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = buffer.size() * sizeof(u32),
+		.pCode = buffer.data(),
+	};
+
+	VkShaderModule out;
+	VK_VERIFY(vkCreateShaderModule(device, &shader_module_create_info, null, &out));
+
+	return out;
+}
+
 static auto copy_image_to_image(VkCommandBuffer cmd, VkImage src, VkImage dst, const VkExtent2D& src_extent, const VkExtent2D& dst_extent) -> void {
 	const VkImageBlit2 blit_region{
 		.sType = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
@@ -263,6 +386,9 @@ struct VkEngine {
 
 		// Init commands.
 		self.init_commands();
+
+		self.init_descriptors();
+		self.init_pipelines();
 	}
 
 	auto create_swapchain(const WindowConfig& window_config) -> void {
@@ -375,6 +501,98 @@ struct VkEngine {
 		}
 	}
 
+	auto init_descriptors() -> void {
+		const DescriptorAllocator::PoolSizeRatio sizes[] = {
+			DescriptorAllocator::PoolSizeRatio{
+				.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				.ratio = 1,
+			},
+		};
+
+		descriptor_allocator.init_pool(device, 10, sizes);
+
+		DescriptorLayoutBuilder layout_builder;
+		layout_builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+
+		draw_image_descriptor_layout = layout_builder.build(device, VK_SHADER_STAGE_COMPUTE_BIT);
+
+		draw_image_descriptors = descriptor_allocator.allocate(device, draw_image_descriptor_layout);
+
+		const VkDescriptorImageInfo image_info{
+			.imageView = draw_image.image_view,
+			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+		};
+
+		const VkWriteDescriptorSet draw_image_write{
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = draw_image_descriptors,
+			.dstBinding = 0,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			.pImageInfo = &image_info,
+		};
+
+		vkUpdateDescriptorSets(device, 1, &draw_image_write, 0, null);
+
+		deletion_queue.enqueue([this] {
+			descriptor_allocator.destroy_pool(device);
+
+			vkDestroyDescriptorSetLayout(device, draw_image_descriptor_layout, null);
+		});
+	}
+
+	auto init_pipelines() -> void {
+		init_background_pipelines();
+	}
+
+	auto init_background_pipelines() -> void {
+		const VkPipelineLayoutCreateInfo comp_layout_create_info{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &draw_image_descriptor_layout,
+		};
+
+		VK_VERIFY(vkCreatePipelineLayout(device, &comp_layout_create_info, null, &gradient_pipeline_layout));
+
+		const VkShaderModule background_shader = vkutils::load_shader_module(SHADER_PATH("gradient.spv"), device);
+
+#if 0
+		const VkPipelineShaderStageCreateInfo stage_create_info{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = background_shader,
+			.pName = "main",
+		};
+
+		const VkComputePipelineCreateInfo comp_pipeline_create_info{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = stage_create_info,
+			.layout = gradient_pipeline_layout,
+		};
+#endif
+
+		const VkComputePipelineCreateInfo comp_pipeline_create_info{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+				.module = background_shader,
+				.pName = "main",
+			},
+			.layout = gradient_pipeline_layout,
+		};
+
+		VK_VERIFY(vkCreateComputePipelines(device, null, 1, &comp_pipeline_create_info, null, &gradient_pipeline));
+
+		// The ShaderModule is only needed to create the pipeline. It is no longer needed so can safely just destroy it.
+		vkDestroyShaderModule(device, background_shader, null);
+
+		deletion_queue.enqueue([this] {
+			vkDestroyPipelineLayout(device, gradient_pipeline_layout, null);
+			vkDestroyPipeline(device, gradient_pipeline, null);
+		});
+	}
+
 	auto draw_background(VkCommandBuffer cmd) -> void {
 		VkClearColorValue clear_color;
 		const auto flash = std::abs(std::sin(static_cast<f32>(current_frame_count) / 120.f));
@@ -390,10 +608,17 @@ struct VkEngine {
 		};
 
 		// Clear the image.
-		vkCmdClearColorImage(cmd, draw_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
-	}
+		//vkCmdClearColorImage(cmd, draw_image.image, VK_IMAGE_LAYOUT_GENERAL, &clear_color, 1, &clear_range);
 
-#define USE_DRAW_IMAGE 1
+		// Bind the gradient drawing compute pipeline.
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline);
+
+		// Bind the descriptor set containing the draw image for the compute pipeline.
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gradient_pipeline_layout, 0, 1, &draw_image_descriptors, 0, null);
+
+		// Execute the compute pipeline dispatch. We are using 16x16 workgroup size so divide by that.
+		vkCmdDispatch(cmd, std::ceil(static_cast<f32>(draw_extent.width) / 16), std::ceil(static_cast<f32>(draw_extent.height) / 16), 1);
+	}
 
 	auto draw() -> void {
 		auto& current_frame = get_current_frame_data();
@@ -565,6 +790,13 @@ struct VkEngine {
 	// Draw resources.
 	AllocatedImage draw_image;
 	VkExtent2D draw_extent;
+
+	DescriptorAllocator descriptor_allocator;
+	VkDescriptorSet draw_image_descriptors;
+	VkDescriptorSetLayout draw_image_descriptor_layout;
+
+	VkPipeline gradient_pipeline = null;
+	VkPipelineLayout gradient_pipeline_layout = null;
 
 	DeletionQueue deletion_queue;
 };

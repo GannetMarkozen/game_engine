@@ -41,6 +41,15 @@ FetchContent_MakeAvailable(fmt)
 FetchContent_MakeAvailable(concurrentqueue)
 FetchContent_MakeAvailable(glm)
 
+# Kinda hacky. Get the root directory from the previous 2 directories.
+set(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+get_filename_component(ROOT_DIR "${ROOT_DIR}" DIRECTORY)
+get_filename_component(ROOT_DIR "${ROOT_DIR}" DIRECTORY)
+
+target_compile_definitions(core
+	PUBLIC ROOT_DIR="${ROOT_DIR}"
+)
+
 target_link_libraries(core
 	PUBLIC fmt::fmt
 	PUBLIC concurrentqueue

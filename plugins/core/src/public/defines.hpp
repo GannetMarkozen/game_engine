@@ -119,6 +119,9 @@ static_assert(false, "No C++ attributes!");
 
 #define null nullptr
 
+#define ASSET_PATH(PATH) ROOT_DIR "/assets/" PATH
+#define SHADER_PATH(PATH) ROOT_DIR "/shaders/" PATH
+
 using i8 = int8_t;
 using u8 = uint8_t;
 using i16 = int16_t;
