@@ -46,7 +46,19 @@ FetchContent_MakeAvailable(tinyobjloader)
 # Gather all cpp files within the src/private directory.
 file(GLOB_RECURSE SOURCES src/private/*.cpp)
 
-add_library(vulkan_renderer STATIC ${SOURCES})
+add_library(vulkan_renderer STATIC
+	${SOURCES}
+
+	# Add used ImGui sources.
+	"${THIRD_PARTY}/imgui/imgui.cpp"
+	"${THIRD_PARTY}/imgui/imgui_draw.cpp"
+	"${THIRD_PARTY}/imgui/imgui_tables.cpp"
+	"${THIRD_PARTY}/imgui/imgui_demo.cpp"
+	"${THIRD_PARTY}/imgui/imgui_widgets.cpp"
+	"${THIRD_PARTY}/imgui/backends/imgui_impl_vulkan.cpp"
+	"${THIRD_PARTY}/imgui/backends/imgui_impl_sdl2.cpp"
+	"${THIRD_PARTY}/imgui/backends/imgui_impl_sdlrenderer2.cpp"
+)
 
 target_include_directories(vulkan_renderer
 	PUBLIC src/public
@@ -100,7 +112,10 @@ target_include_directories(vulkan_renderer
 	PUBLIC "${VulkanHeaders_SOURCE_DIR}/include"# C++ API.
 	PUBLIC "${vma_SOURCE_DIR}/include"
 	PUBLIC "${stb_SOURCE_DIR}"
+
+	# Third-Party includes.
 	PUBLIC "${THIRD_PARTY}/vk-bootstrap"
+	PUBLIC "${THIRD_PARTY}/imgui"
 )
 
 target_link_libraries(vulkan_renderer

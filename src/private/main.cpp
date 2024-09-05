@@ -27,10 +27,11 @@ struct SomeSystem {
 using res::RequestExit;
 
 auto some_system(ExecContext& context, usize& count, i32& something, Query<const u64>& query, const Res<RequestExit> request_exit) -> void {
-
+#if 0
 	if (++count >= 10000) {
 		request_exit->value = true;
 	}
+#endif
 }
 
 auto main() -> int {

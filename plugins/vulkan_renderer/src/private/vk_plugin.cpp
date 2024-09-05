@@ -9,6 +9,10 @@
 
 #include <VkBootstrap.h>
 
+#include "imgui.h"
+#include "backends/imgui_impl_sdl2.h"
+#include "backends/imgui_impl_vulkan.h"
+
 #include "defines.hpp"
 #include "ecs/app.hpp"
 #include "gameplay_framework.hpp"
@@ -153,6 +157,22 @@ struct DescriptorAllocator {
 static constexpr usize FRAMES_IN_FLIGHT_COUNT = 2;
 
 namespace vkinit {
+static auto make_attachment_info(VkImageView image_view, const Optional<VkClearValue>& clear_value = NULL_OPTIONAL, const VkImageLayout layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) -> VkRenderingAttachmentInfo {
+	VkRenderingAttachmentInfo out{
+		.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+		.imageView = image_view,
+		.imageLayout = layout,
+		.loadOp = clear_value ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+		.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+	};
+
+	if (clear_value) {
+		out.clearValue = *clear_value;
+	}
+
+	return out;
+}
+
 static auto make_image_create_info(const VkFormat format, const VkImageUsageFlags usage_flags, const VkExtent3D extent) -> VkImageCreateInfo {
 	return {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -187,6 +207,8 @@ static auto make_image_view_create_info(const VkFormat format, const VkImage ima
 
 namespace vkutils {
 static auto load_shader_module(const char* file_path, VkDevice device) -> VkShaderModule {
+	ASSERTF(StringView{file_path}.contains(".spv"), "File path for shader module {} must have the .spv extension!", file_path);
+
 	std::ifstream file{file_path, std::ios::ate | std::ios::binary};
 	ASSERTF(file.is_open(), "Failed to open file {}!", file_path);
 
@@ -389,6 +411,8 @@ struct VkEngine {
 
 		self.init_descriptors();
 		self.init_pipelines();
+
+		self.init_imgui();
 	}
 
 	auto create_swapchain(const WindowConfig& window_config) -> void {
@@ -499,6 +523,33 @@ struct VkEngine {
 			VK_VERIFY(vkCreateSemaphore(device, &semaphore_create_info, null, &frames[i].render_semaphore));
 			VK_VERIFY(vkCreateSemaphore(device, &semaphore_create_info, null, &frames[i].swapchain_semaphore));
 		}
+
+		// Init immediate command stuff.
+		VK_VERIFY(vkCreateCommandPool(device, &pool_create_info, null, &immediate_command_pool));
+
+		const VkCommandBufferAllocateInfo immediate_cmd_alloc_info{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = immediate_command_pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
+
+		VK_VERIFY(vkAllocateCommandBuffers(device, &immediate_cmd_alloc_info, &immediate_command_buffer));
+
+		deletion_queue.enqueue([this] {
+			ASSERT(immediate_command_pool);
+			vkDestroyCommandPool(device, immediate_command_pool, null);
+			immediate_command_pool = null;
+		});
+
+		// Init immediate syn structures.
+		VK_VERIFY(vkCreateFence(device, &fence_create_info, null, &immediate_fence))
+
+		deletion_queue.enqueue([this] {
+			ASSERT(immediate_fence);
+			vkDestroyFence(device, immediate_fence, null);
+			immediate_fence = null;
+		});
 	}
 
 	auto init_descriptors() -> void {
@@ -556,21 +607,6 @@ struct VkEngine {
 
 		const VkShaderModule background_shader = vkutils::load_shader_module(SHADER_PATH("gradient.spv"), device);
 
-#if 0
-		const VkPipelineShaderStageCreateInfo stage_create_info{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-			.module = background_shader,
-			.pName = "main",
-		};
-
-		const VkComputePipelineCreateInfo comp_pipeline_create_info{
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = stage_create_info,
-			.layout = gradient_pipeline_layout,
-		};
-#endif
-
 		const VkComputePipelineCreateInfo comp_pipeline_create_info{
 			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
 			.stage{
@@ -591,6 +627,101 @@ struct VkEngine {
 			vkDestroyPipelineLayout(device, gradient_pipeline_layout, null);
 			vkDestroyPipeline(device, gradient_pipeline, null);
 		});
+	}
+
+	auto init_imgui() -> void {
+		// Create a descriptor pool for ImGUI.
+		const VkDescriptorPoolSize pool_sizes[] = {
+			{ VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
+			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
+			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
+			{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
+		};
+
+		const VkDescriptorPoolCreateInfo desc_pool_create_info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+			.maxSets = 1000,
+			.poolSizeCount = static_cast<u32>(std::size(pool_sizes)),
+			.pPoolSizes = pool_sizes,
+		};
+
+		VkDescriptorPool imgui_pool;
+		VK_VERIFY(vkCreateDescriptorPool(device, &desc_pool_create_info, null, &imgui_pool));
+
+		// Initializes core of ImGui.
+		ImGui::CreateContext();
+
+		ImGui_ImplSDL2_InitForVulkan(window);
+
+		ImGui_ImplVulkan_InitInfo imgui_init_info{
+			.Instance = instance,
+			.PhysicalDevice = physical_device,
+			.Device = device,
+			.Queue = graphics_queue,
+			.DescriptorPool = imgui_pool,
+			.MinImageCount = 3,
+			.ImageCount = 3,
+			.MSAASamples = VK_SAMPLE_COUNT_1_BIT,
+			.UseDynamicRendering = true,
+			.PipelineRenderingCreateInfo{
+				.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+				.colorAttachmentCount = 1,
+				.pColorAttachmentFormats = &swapchain_image_format,
+			},
+		};
+
+		ImGui_ImplVulkan_Init(&imgui_init_info);
+
+		ImGui_ImplVulkan_CreateFontsTexture();
+
+		deletion_queue.enqueue([this, imgui_pool] {
+			ImGui_ImplVulkan_Shutdown();
+			vkDestroyDescriptorPool(device, imgui_pool, null);
+		});
+	}
+
+	auto immediate_submit(const FnRef<void(VkCommandBuffer cmd)> fn) -> void {
+		VK_VERIFY(vkResetFences(device, 1, &immediate_fence));
+		VK_VERIFY(vkResetCommandBuffer(immediate_command_buffer, 0));
+
+		VkCommandBuffer cmd = immediate_command_buffer;
+		ASSERT(cmd);
+
+		const VkCommandBufferBeginInfo cmd_begin_info{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+
+		VK_VERIFY(vkBeginCommandBuffer(cmd, &cmd_begin_info));
+
+		fn(cmd);
+
+		VK_VERIFY(vkEndCommandBuffer(cmd));
+
+		const VkCommandBufferSubmitInfo cmd_submit_info{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = cmd,
+		};
+
+		const VkSubmitInfo2 submit_info{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.commandBufferInfoCount = 1,
+			.pCommandBufferInfos = &cmd_submit_info,
+		};
+
+		// Submit command buffer to the queue and execute it. Block CPU until graphics command has finished execution.
+		// @NOTE: Suboptimal.
+		VK_VERIFY(vkQueueSubmit2(graphics_queue, 1, &submit_info, immediate_fence));
+
+		VK_VERIFY(vkWaitForFences(device, 1, &immediate_fence, true, UINT64_MAX));
 	}
 
 	auto draw_background(VkCommandBuffer cmd) -> void {
@@ -618,6 +749,30 @@ struct VkEngine {
 
 		// Execute the compute pipeline dispatch. We are using 16x16 workgroup size so divide by that.
 		vkCmdDispatch(cmd, std::ceil(static_cast<f32>(draw_extent.width) / 16), std::ceil(static_cast<f32>(draw_extent.height) / 16), 1);
+	}
+
+	auto draw_imgui(VkCommandBuffer cmd, VkImageView target_image_view) -> void {
+		const VkRenderingAttachmentInfo color_attachment = vkinit::make_attachment_info(target_image_view, NULL_OPTIONAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		const VkRenderingInfo render_info{
+			.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+			.renderArea{
+				.offset{0, 0},
+				.extent = swapchain_extent,
+			},
+			.layerCount = 1,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &color_attachment,
+
+			// Unused for now.
+			.pDepthAttachment = null,
+			.pStencilAttachment = null,
+		};
+
+		vkCmdBeginRendering(cmd, &render_info);
+
+		ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+
+		vkCmdEndRendering(cmd);
 	}
 
 	auto draw() -> void {
@@ -661,10 +816,16 @@ struct VkEngine {
 
 		vkutils::copy_image_to_image(cmd, draw_image.image, swapchain_images[swapchain_image_index], draw_extent, swapchain_extent);
 
-		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+		//vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-		// Make swapchain presentable.
-		//vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+		// Set swapchain image layout to Attachment Optimal so we can draw to it.
+		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+		// Draw ImGui directly onto the swapchain image.
+		draw_imgui(cmd, swapchain_image_views[swapchain_image_index]);
+
+		// Transition swapchain layout to a presentable layout so it can be displayed.
+		vkutils::transition_image_layout(cmd, swapchain_images[swapchain_image_index], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
 		// Finalize the command buffer.
 		VK_VERIFY(vkEndCommandBuffer(cmd));
@@ -798,6 +959,11 @@ struct VkEngine {
 	VkPipeline gradient_pipeline = null;
 	VkPipelineLayout gradient_pipeline_layout = null;
 
+	// Immediate submit structures.
+	VkFence immediate_fence = null;
+	VkCommandBuffer immediate_command_buffer = null;
+	VkCommandPool immediate_command_pool = null;
+
 	DeletionQueue deletion_queue;
 };
 }
@@ -855,6 +1021,9 @@ auto draw(ExecContext& context, Res<VkEngine> engine, Res<IsRendering> is_render
 				}
 			}
 			}
+
+			// Send events to ImGui to handle.
+			ImGui_ImplSDL2_ProcessEvent(&event);
 		}
 	}
 
@@ -862,6 +1031,16 @@ auto draw(ExecContext& context, Res<VkEngine> engine, Res<IsRendering> is_render
 		std::this_thread::sleep_for(std::chrono::milliseconds{100});// @TODO: Implement actual frame-pacing.
 		return;
 	}
+
+	// Draw for ImGui.
+	ImGui_ImplVulkan_NewFrame();
+	ImGui_ImplSDL2_NewFrame();
+	ImGui::NewFrame();
+
+	// TMP: Test UI.
+	ImGui::ShowDemoWindow();
+
+	ImGui::Render();
 
 	// Draw.
 	engine->draw();

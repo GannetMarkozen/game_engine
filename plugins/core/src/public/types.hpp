@@ -62,7 +62,7 @@ struct FnRef<Return(Params...)> {
 			return std::invoke(static_cast<std::decay_t<T>*>(data), std::forward<Params>(params)...);
 		}} {}
 
-	FORCEINLINE constexpr auto operator()(Params&&... params) -> Return {
+	FORCEINLINE constexpr auto operator()(Params... params) const -> Return {
 		return fn(data, std::forward<Params>(params)...);
 	}
 
