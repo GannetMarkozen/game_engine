@@ -120,7 +120,9 @@ static_assert(false, "No C++ attributes!");
 #define null nullptr
 
 #define ASSET_PATH(PATH) ROOT_DIR "/assets/" PATH
-#define SHADER_PATH(PATH) ROOT_DIR "/shaders/" PATH
+
+// Path to the compiled shader path. Suffixes with .spv.
+#define SHADER_PATH(PATH) ROOT_DIR "/shaders/compiled/" PATH ".spv"
 
 using i8 = int8_t;
 using u8 = uint8_t;

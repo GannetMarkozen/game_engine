@@ -54,12 +54,12 @@ struct FnRef<Return(Params...)> {
 	constexpr FnRef(const FnRef&) = default;
 	constexpr auto operator=(const FnRef&) -> FnRef& = default;
 
-	template <cpts::Invokable<Return, Params...> T>
+	template <cpts::InvokableReturns<Return, Params...> T>
 	FORCEINLINE constexpr FnRef(T&& other [[clang::lifetimebound]])
 		:
 		data{&other},
-		fn{[](void* data, Params&&... params) -> Return {
-			return std::invoke(static_cast<std::decay_t<T>*>(data), std::forward<Params>(params)...);
+		fn{[](void* data, Params... params) -> Return {
+			return std::invoke(*static_cast<std::decay_t<T>*>(data), std::forward<Params>(params)...);
 		}} {}
 
 	FORCEINLINE constexpr auto operator()(Params... params) const -> Return {

@@ -28,6 +28,11 @@ FetchContent_Declare(
   GIT_TAG release-2.30.6
 )
 FetchContent_Declare(
+	fastgltf
+	GIT_REPOSITORY https://github.com/spnda/fastgltf.git
+	GIT_TAG v0.8.0
+)
+FetchContent_Declare(
 	stb
 	GIT_REPOSITORY https://github.com/nothings/stb.git
 	GIT_TAG master
@@ -40,6 +45,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(VulkanHeaders)
 FetchContent_MakeAvailable(VulkanMemoryAllocator)
 FetchContent_MakeAvailable(SDL2)
+FetchContent_MakeAvailable(fastgltf)
 FetchContent_MakeAvailable(stb)
 FetchContent_MakeAvailable(tinyobjloader)
 
@@ -128,5 +134,6 @@ target_link_libraries(vulkan_renderer
 	PRIVATE GPUOpen::VulkanMemoryAllocator
 	PRIVATE vk-bootstrap::vk-bootstrap
 	PRIVATE SDL2::SDL2
+	PRIVATE fastgltf::fastgltf
 	PRIVATE tinyobjloader
 )
