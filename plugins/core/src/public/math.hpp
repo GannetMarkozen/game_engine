@@ -4,6 +4,10 @@
 #include "defines.hpp"
 
 namespace math {
+[[nodiscard]] FORCEINLINE constexpr auto square(const auto value) {
+	return value * value;
+}
+
 [[nodiscard]] FORCEINLINE constexpr auto divide_and_round_down(const std::integral auto dividend, const std::integral auto divider) {
 	return dividend / divider;
 }

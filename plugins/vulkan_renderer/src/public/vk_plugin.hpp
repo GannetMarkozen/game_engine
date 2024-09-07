@@ -11,8 +11,8 @@ struct App;
 struct WindowConfig {
 	const char* [[clang::lifetimebound]] title = "GanEngine";
 	struct {
-		usize width = 1920;
-		usize height = 1080;
+		usize width = 2560;
+		usize height = 1440;
 	} extent;
 
 	VkPresentModeKHR present_mode = VK_PRESENT_MODE_MAILBOX_KHR;

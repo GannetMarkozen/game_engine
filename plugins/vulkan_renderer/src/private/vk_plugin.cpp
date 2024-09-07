@@ -1,5 +1,6 @@
 #include "vk_plugin.hpp"
 
+#include "math.hpp"
 #include "pipeline_builder.hpp"
 
 #include "SDL_main.h"
@@ -48,7 +49,7 @@ struct DeletionQueue {
 		dtors.clear();
 	}
 
-	Array<Fn<void()>> dtors;
+	Queue<Fn<void()>> dtors;
 };
 
 struct AllocatedImage {
@@ -68,6 +69,7 @@ struct FrameData {
 	VkFence render_fence = null;
 
 	DeletionQueue deletion_queue;
+	DescriptorAllocatorGrowable descriptors;
 };
 
 struct ComputePushConstants {
@@ -612,6 +614,28 @@ struct VkEngine {
 		});
 	}
 
+	auto init_scene_data_descriptor() -> void {
+		DescriptorLayoutBuilder builder;
+		scene_data_descriptor_layout = builder
+			.add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+			.build(device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);// Accessible in both vertex and fragment shaders.
+
+		deletion_queue.enqueue([this] {
+			vkDestroyDescriptorSetLayout(device, scene_data_descriptor_layout, null);
+		});
+	}
+
+	auto init_single_image_descriptor() -> void {
+		DescriptorLayoutBuilder builder;
+		single_image_descriptor_layout = builder
+			.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+			.build(device, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+		deletion_queue.enqueue([this] {
+			vkDestroyDescriptorSetLayout(device, single_image_descriptor_layout, null);
+		});
+	}
+
 	auto init_descriptors() -> void {
 		const DescriptorAllocator::PoolSizeRatio sizes[] = {
 			DescriptorAllocator::PoolSizeRatio{
@@ -629,6 +653,7 @@ struct VkEngine {
 
 		draw_image_descriptors = descriptor_allocator.allocate(device, draw_image_descriptor_layout);
 
+#if 0
 		const VkDescriptorImageInfo image_info{
 			.imageView = draw_image.image_view,
 			.imageLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -644,12 +669,36 @@ struct VkEngine {
 		};
 
 		vkUpdateDescriptorSets(device, 1, &draw_image_write, 0, null);
+#else
+		DescriptorWriter writer;
+		writer.write_image(0, draw_image.image_view, null, VK_IMAGE_LAYOUT_GENERAL, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		writer.update_set(device, draw_image_descriptors);
+#endif
 
 		deletion_queue.enqueue([this] {
 			descriptor_allocator.destroy_pool(device);
 
 			vkDestroyDescriptorSetLayout(device, draw_image_descriptor_layout, null);
 		});
+
+		for (i32 i = 0; i < FRAMES_IN_FLIGHT_COUNT; ++i) {
+			// Create a descriptor pool.
+			DescriptorAllocatorGrowable::PoolSizeRatio frame_sizes[] = {
+				{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 },
+				{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 },
+				{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 3 },
+				{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 },
+			};
+
+			frames[i].descriptors.init(device, 1000, frame_sizes);
+
+			deletion_queue.enqueue([this, i] {
+				frames[i].descriptors.destroy_pools(device);
+			});
+		}
+
+		init_scene_data_descriptor();
+		init_single_image_descriptor();
 	}
 
 	auto init_pipelines() -> void {
@@ -809,6 +858,76 @@ struct VkEngine {
 		});
 	}
 
+	[[nodiscard]] auto create_image(const VkExtent3D& extent, const VkFormat format, const VkImageUsageFlags usage, const bool mipmapped = false) -> AllocatedImage {
+		AllocatedImage new_image{
+			.extent = extent,
+			.format = format,
+		};
+
+		auto image_create_info = vkinit::make_image_create_info(format, usage, extent);
+		if (mipmapped) {// Automatically determine number of mip-levels to produce.
+			image_create_info.mipLevels = static_cast<u32>(std::floor(std::log2(std::max(extent.width, extent.height)))) + 1;
+		}
+
+		// Always allocate images on dedicated GPU memory.
+		const VmaAllocationCreateInfo alloc_create_info{
+			.usage = VMA_MEMORY_USAGE_GPU_ONLY,
+			.requiredFlags = static_cast<VkMemoryPropertyFlags>(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+		};
+
+		VK_VERIFY(vmaCreateImage(allocator, &image_create_info, &alloc_create_info, &new_image.image, &new_image.allocation, null));
+
+		// If it's a depth format need to make sure it has the correct aspect flags.
+		const VkImageAspectFlags aspect_flags = format == VK_FORMAT_D32_SFLOAT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+
+		// Build an image-view for the image.
+		auto image_view_create_info = vkinit::make_image_view_create_info(format, new_image.image, aspect_flags);
+		image_view_create_info.subresourceRange.levelCount = image_create_info.mipLevels;
+
+		VK_VERIFY(vkCreateImageView(device, &image_view_create_info, null, &new_image.image_view));
+
+		return new_image;
+	}
+
+	[[nodiscard]] auto create_image(const void* data, const VkExtent3D& extent, const VkFormat format, const VkImageUsageFlags usage, const bool mipmapped = false) -> AllocatedImage {
+		const usize buffer_size = extent.width * extent.height * extent.depth * 4;// @NOTE: Assumes RGBA 8 format.
+		const auto staging_buffer = create_buffer(buffer_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+		memcpy(staging_buffer.allocation->GetMappedData(), data, buffer_size);
+
+		const auto new_image = create_image(extent, format, usage | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, mipmapped);
+
+		immediate_submit([&](const VkCommandBuffer cmd) {
+			// Transition the new image's layout to a transfer destination.
+			vkutils::transition_image_layout(cmd, new_image.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+			const VkBufferImageCopy copy_region{
+				.bufferOffset = 0,
+				.bufferRowLength = 0,
+				.bufferImageHeight = 0,
+
+				.imageSubresource{
+					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+					.mipLevel = 0,
+					.baseArrayLayer = 0,
+					.layerCount = 1,
+				},
+
+				.imageExtent = extent,
+			};
+
+			vkCmdCopyBufferToImage(cmd, staging_buffer.buffer, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+
+			// Now transition the image layout to be optimally read by shaders.
+			vkutils::transition_image_layout(cmd, new_image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		});
+
+		// No longer need the staging buffer. Can safely destroy it now.
+		destroy_buffer(staging_buffer);
+
+		return new_image;
+	}
+
 	[[nodiscard]] auto create_buffer(const usize size, const VkBufferUsageFlags usage, const VmaMemoryUsage memory_usage) -> AllocatedBuffer {
 		const VkBufferCreateInfo buffer_create_info{
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -825,6 +944,11 @@ struct VkEngine {
 		VK_VERIFY(vmaCreateBuffer(allocator, &buffer_create_info, &alloc_create_info, &out.buffer, &out.allocation, &out.allocation_info));
 
 		return out;
+	}
+
+	auto destroy_image(const AllocatedImage& image) -> void {
+		vkDestroyImageView(device, image.image_view, null);
+		vmaDestroyImage(allocator, image.image, image.allocation);
 	}
 
 	auto destroy_buffer(const AllocatedBuffer& buffer) -> void {
@@ -966,7 +1090,8 @@ struct VkEngine {
 	}
 
 	auto init_mesh_pipeline() -> void {
-		const VkShaderModule mesh_frag_shader = vkutils::load_shader_module(SHADER_PATH("colored_triangle.frag"), device);
+		//const VkShaderModule mesh_frag_shader = vkutils::load_shader_module(SHADER_PATH("colored_triangle.frag"), device);
+		const VkShaderModule mesh_frag_shader = vkutils::load_shader_module(SHADER_PATH("tex_image.frag"), device);
 		const VkShaderModule mesh_vert_shader = vkutils::load_shader_module(SHADER_PATH("colored_triangle_mesh.vert"), device);
 
 		const VkPushConstantRange push_constant{
@@ -975,10 +1100,19 @@ struct VkEngine {
 			.size = sizeof(GpuDrawPushConstants),
 		};
 
+		DescriptorLayoutBuilder layout_builder;
+		auto mesh_descriptor_layout = layout_builder
+			.add_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER)
+			.build(device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+
+		deletion_queue.enqueue([this, mesh_descriptor_layout] {
+			vkDestroyDescriptorSetLayout(device, mesh_descriptor_layout, null);
+		});
+
 		const VkPipelineLayoutCreateInfo pipeline_layout_create_info{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 			.setLayoutCount = 1,
-			.pSetLayouts = &draw_image_descriptor_layout,
+			.pSetLayouts = &single_image_descriptor_layout,
 			.pushConstantRangeCount = 1,
 			.pPushConstantRanges = &push_constant,
 		};
@@ -1022,10 +1156,7 @@ struct VkEngine {
 		i32 width, height;
 		SDL_GetWindowSize(window, &width, &height);
 
-		swapchain_extent.width = width;
-		swapchain_extent.height = height;
-
-		create_swapchain(swapchain_extent.width, swapchain_extent.height);
+		create_swapchain(width, height);
 
 		resize_requested = false;
 	}
@@ -1059,6 +1190,57 @@ struct VkEngine {
 		ASSERT(loaded_meshes);
 
 		test_meshes = std::move(*loaded_meshes);
+
+		// Init default textures and samplers.
+
+		// 3 default textures: White, Gray, Black. 1 pixel each.
+		const u32 white = glm::packUnorm4x8(glm::vec4{1.f, 1.f, 1.f, 1.f});
+		const u32 gray = glm::packUnorm4x8(glm::vec4{0.67f, 0.67f, 0.67f, 1.f});
+		const u32 black = glm::packUnorm4x8(glm::vec4{0.f, 0.f, 0.f, 0.f});
+
+		// Checkerboard image.
+		const u32 magenta = glm::packUnorm4x8(glm::vec4{1.f, 0.f, 1.f, 1.f});
+
+		// 16x16 texture.
+		// @NOTE: Probably unnecessary to even have this resolution. 2x2 may suffice.
+		u32 checkerboard_pixels[math::square(16)];
+		for (i32 x = 0; x < 16; ++x) {
+			for (i32 y = 0; y < 16; ++y) {
+				checkerboard_pixels[x + y * 16] = ((x % 2) ^ (y % 2)) ? magenta : black;
+			}
+		}
+
+		// Create images.
+		white_image = create_image(&white, VkExtent3D{1, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		gray_image = create_image(&gray, VkExtent3D{1, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		black_image = create_image(&black, VkExtent3D{1, 1, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+		error_checkerboard_image = create_image(checkerboard_pixels, VkExtent3D{16, 16, 1}, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
+
+		// Create samplers.
+		const VkSamplerCreateInfo linear_sampler_create_info{
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_LINEAR,
+			.minFilter = VK_FILTER_LINEAR,
+		};
+
+		const VkSamplerCreateInfo nearest_sampler_create_info{
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_NEAREST,
+			.minFilter = VK_FILTER_NEAREST,
+		};
+
+		VK_VERIFY(vkCreateSampler(device, &linear_sampler_create_info, null, &default_sampler_linear));
+		VK_VERIFY(vkCreateSampler(device, &nearest_sampler_create_info, null, &default_sampler_nearest));
+
+		deletion_queue.enqueue([this] {
+			vkDestroySampler(device, default_sampler_linear, null);
+			vkDestroySampler(device, default_sampler_nearest, null);
+
+			destroy_image(white_image);
+			destroy_image(gray_image);
+			destroy_image(black_image);
+			destroy_image(error_checkerboard_image);
+		});
 	}
 
 	[[nodiscard]] auto load_gltf_meshes(const std::filesystem::path& file_path) -> Optional<Array<SharedPtr<MeshAsset>>> {
@@ -1106,7 +1288,38 @@ struct VkEngine {
 		vkCmdSetViewport(cmd, 0, 1, &viewport);
 		vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+		// Allocate a new buffer for scene data.
+		// @NOTE: VMA_MEMORY_USAGE_CPU_TO_GPU is marked deprecated for some reason but I don't know what the alternative is.
+		const AllocatedBuffer scene_data_buffer = create_buffer(sizeof(GpuSceneData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_CPU_TO_GPU);
+
+		get_current_frame_data().deletion_queue.enqueue([this, scene_data_buffer] {
+			destroy_buffer(scene_data_buffer);
+		});
+
+		static_assert(std::is_trivial_v<GpuSceneData>);
+
+		// Write to scene_data_buffer.
+		auto* scene_data_allocation = static_cast<GpuSceneData*>(scene_data_buffer.allocation->GetMappedData());
+		std::construct_at(scene_data_allocation, scene_data);
+
+		// Create a descriptor set that binds that buffer and update it. (Will be automatically freed when this frame index is used again).
+		const auto global_descriptor_set = get_current_frame_data().descriptors.allocate(device, scene_data_descriptor_layout);
+
+		DescriptorWriter desc_writer;
+		desc_writer.write_buffer(0, scene_data_buffer.buffer, sizeof(GpuSceneData), 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+		desc_writer.update_set(device, global_descriptor_set);
+
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline);
+
+		// Bind a texture.
+		const auto image_set = get_current_frame_data().descriptors.allocate(device, single_image_descriptor_layout);
+		{
+			DescriptorWriter writer;
+			writer.write_image(0, error_checkerboard_image.image_view, default_sampler_nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+			writer.update_set(device, image_set);
+		}
+
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, mesh_pipeline_layout, 0, 1, &image_set, 0, null);
 
 		const auto& mesh = *test_meshes[2];
 
@@ -1142,6 +1355,7 @@ struct VkEngine {
 
 		// Flush resources pending deletion after previous-frame has finished presenting.
 		current_frame.deletion_queue.flush();
+		current_frame.descriptors.clear_pools(device);
 
 		u32 swapchain_image_index;
 		const VkResult acquire_next_image_result = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, current_frame.swapchain_semaphore, null, &swapchain_image_index);
@@ -1164,8 +1378,13 @@ struct VkEngine {
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
 		};
 
+#if 0
 		draw_extent.width = draw_image.extent.width;
 		draw_extent.height = draw_image.extent.height;
+#else
+		draw_extent.width = std::min(draw_image.extent.width, swapchain_extent.width) * render_scale;
+		draw_extent.height = std::min(draw_image.extent.height, swapchain_extent.height) * render_scale;
+#endif
 
 		VK_VERIFY(vkBeginCommandBuffer(cmd, &cmd_begin_info));
 
@@ -1267,6 +1486,9 @@ struct VkEngine {
 
 		// Destroy frame-data.
 		for (i32 i = 0; i < FRAMES_IN_FLIGHT_COUNT; ++i) {
+			// Destroy per-frame allocations.
+			frames[i].deletion_queue.flush();
+
 			// Destroy command pool.
 			vkDestroyCommandPool(device, frames[i].command_pool, null);
 
@@ -1337,10 +1559,16 @@ struct VkEngine {
 	AllocatedImage draw_image;
 	AllocatedImage depth_image;
 	VkExtent2D draw_extent;
+	f32 render_scale = 1.f;
 
 	DescriptorAllocator descriptor_allocator;
 	VkDescriptorSet draw_image_descriptors;
 	VkDescriptorSetLayout draw_image_descriptor_layout;
+
+	GpuSceneData scene_data;
+	VkDescriptorSetLayout scene_data_descriptor_layout;
+
+	VkDescriptorSetLayout single_image_descriptor_layout;
 
 	VkPipeline gradient_pipeline = null;
 	VkPipelineLayout gradient_pipeline_layout = null;
@@ -1357,6 +1585,13 @@ struct VkEngine {
 	VkPipeline mesh_pipeline;
 
 	Array<SharedPtr<MeshAsset>> test_meshes;
+
+	AllocatedImage white_image;
+	AllocatedImage black_image;
+	AllocatedImage gray_image;
+	AllocatedImage error_checkerboard_image;
+	VkSampler default_sampler_linear;
+	VkSampler default_sampler_nearest;
 
 	bool resize_requested = false;
 
@@ -1446,9 +1681,13 @@ auto draw(ExecContext& context, Res<VkEngine> engine, Res<IsRendering> is_render
 
 		ImGui::Text("Framerate ms: %.3f", static_cast<f32>(std::chrono::duration_cast<std::chrono::microseconds>(current_time_point - previous_time_point).count()) / 1000);
 
+		ImGui::SliderFloat("Render Scale", &engine->render_scale, 0.3f, 1.f);
+
 		ImGui::Text("Selected effect: %s", selected.name);
 
 		ImGui::SliderInt("Effect Index: ", &engine->current_background_effect, 0, engine->background_effects.size() - 1);
+
+		ImGui::InputFloat3("color", reinterpret_cast<float*>(&engine->scene_data.ambient_color));
 
 		ImGui::InputFloat4("data1", reinterpret_cast<float*>(&selected.data.data1));
 		ImGui::InputFloat4("data2", reinterpret_cast<float*>(&selected.data.data2));

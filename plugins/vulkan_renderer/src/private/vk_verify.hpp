@@ -1,5 +1,7 @@
 #pragma once
 
+#include "assert.hpp"
+
 // Asserts if the command being executed does not result in VK_SUCCESS. Only checks in Debug builds.
 #define VK_VERIFY(CMD) { \
 		[[maybe_unused]] const VkResult vk_result = CMD; \

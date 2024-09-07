@@ -3,6 +3,7 @@
 #include "defines.hpp"
 #include <concepts>
 #include <type_traits>
+#include <deque>
 #include <utility>
 
 template <typename T, typename Allocator = std::allocator<T>>
@@ -13,6 +14,9 @@ using Span = std::span<T, EXTENT>;
 
 template <typename T, usize SIZE>
 using StaticArray = std::array<T, SIZE>;
+
+template <typename T, typename Allocator = std::allocator<T>>
+using Queue = std::deque<T, Allocator>;
 
 template <typename T1, typename T2>
 using Pair = std::pair<T1, T2>;
