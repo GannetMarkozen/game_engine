@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 set(THIRD_PARTY ${ROOT_DIR}/third_party)
 
-project(vulkan_renderer VERSION 1.0)
+project(renderer VERSION 1.0)
 
 include(FetchContent)
 
@@ -16,11 +16,6 @@ FetchContent_Declare(
 	VulkanHeaders
 	GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
 	GIT_TAG v1.3.266
-)
-FetchContent_Declare(
-	VulkanMemoryAllocator
-	GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-	GIT_TAG v3.1.0
 )
 FetchContent_Declare(
   SDL2
@@ -43,7 +38,6 @@ FetchContent_Declare(
 	GIT_TAG v2.0.0rc13
 )
 FetchContent_MakeAvailable(VulkanHeaders)
-FetchContent_MakeAvailable(VulkanMemoryAllocator)
 FetchContent_MakeAvailable(SDL2)
 FetchContent_MakeAvailable(fastgltf)
 FetchContent_MakeAvailable(stb)
@@ -52,7 +46,7 @@ FetchContent_MakeAvailable(tinyobjloader)
 # Gather all cpp files within the src/private directory.
 file(GLOB_RECURSE SOURCES src/private/*.cpp)
 
-add_library(vulkan_renderer STATIC
+add_library(renderer STATIC
 	${SOURCES}
 
 	# Add used ImGui sources.
@@ -66,7 +60,7 @@ add_library(vulkan_renderer STATIC
 	"${THIRD_PARTY}/imgui/backends/imgui_impl_sdlrenderer2.cpp"
 )
 
-target_include_directories(vulkan_renderer
+target_include_directories(renderer
 	PUBLIC src/public
 )
 
@@ -112,16 +106,15 @@ add_custom_target(
 	DEPENDS ${SPIRV_BINARY_FILES}
 )
 
-target_compile_definitions(vulkan_renderer
+target_compile_definitions(renderer
 	PRIVATE VULKAN_HPP_NO_EXCEPTIONS
-	PRIVATE VMA_IMPLEMENTATION
 )
 
 # Include Vulkan SDK directories.
-target_include_directories(vulkan_renderer
+target_include_directories(renderer
 	PUBLIC "${VULKAN_SDK}/Include"# C API.
 	PUBLIC "${VulkanHeaders_SOURCE_DIR}/include"# C++ API.
-	PUBLIC "${vma_SOURCE_DIR}/include"
+	PRIVATE "${vma_SOURCE_DIR}/include"
 	PUBLIC "${stb_SOURCE_DIR}"
 
 	# Third-Party includes.
@@ -129,14 +122,13 @@ target_include_directories(vulkan_renderer
 	PUBLIC "${THIRD_PARTY}/imgui"
 )
 
-target_link_libraries(vulkan_renderer
+target_link_libraries(renderer
 	# Plugins.
 	PUBLIC core
 	PUBLIC gameplay_framework
 
 	# Other dependencies.
 	PRIVATE Vulkan::Vulkan
-	PRIVATE GPUOpen::VulkanMemoryAllocator
 	PRIVATE vk-bootstrap::vk-bootstrap
 	PRIVATE SDL2::SDL2
 	PRIVATE fastgltf::fastgltf

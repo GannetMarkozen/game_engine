@@ -7,3 +7,4 @@
 #include "ecs/app.hpp"
 #include "ecs/world.hpp"
 #include "ecs/query.hpp"
+#include "ecs/defaults.hpp"

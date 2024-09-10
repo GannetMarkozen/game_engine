@@ -55,6 +55,18 @@ struct Transform {
 	Quat<T> rotation;
 	Vec3<T> scale;
 };
+
+template <std::floating_point T>
+struct Bounds {
+	[[nodiscard]] static constexpr auto zero() -> Bounds {
+		return {
+			.min{0, 0, 0},
+			.max{0, 0, 0},
+		};
+	}
+
+	Vec3<T> min, max;
+};
 }
 
 using Vec3 = math::Vec3<f32>;
@@ -63,3 +75,4 @@ using Mat4x4 = math::Mat4x4<f32>;
 using Mat3x3 = math::Mat3x3<f32>;
 using Quat = math::Quat<f32>;
 using Transform = math::Transform<f32>;
+using Bounds = math::Bounds<f32>;

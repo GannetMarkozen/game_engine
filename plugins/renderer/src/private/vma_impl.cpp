@@ -1,0 +1,3 @@
+// Gotta declare a .cpp file for the implementation of vma...
+#define VMA_IMPLEMENTATION
+#include <vma/vk_mem_alloc.h>

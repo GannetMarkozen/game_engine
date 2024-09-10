@@ -5,5 +5,5 @@
 auto DefaultPlugins::init(App& app) -> void {
 	app
 		.register_plugin(gameplay_framework)
-		.register_plugin(vk);
+		.register_plugin(renderer);
 }

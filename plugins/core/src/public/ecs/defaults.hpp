@@ -1,5 +1,7 @@
 #pragma once
 
+#include "linalg.hpp"
+
 namespace group {
 struct GameFrame {};
 struct RenderFrame {};

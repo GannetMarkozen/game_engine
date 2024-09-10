@@ -24,5 +24,5 @@ include(FetchContent)
 
 target_link_libraries(default_plugins
 	PUBLIC gameplay_framework
-	PUBLIC vulkan_renderer
+	PUBLIC renderer
 )

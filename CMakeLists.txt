@@ -89,7 +89,7 @@ add_definitions(-D_CRT_SECURE_NO_WARNINGS)
 # Plugins.
 add_subdirectory(plugins/core)
 add_subdirectory(plugins/default_plugins)
-add_subdirectory(plugins/vulkan_renderer)
+add_subdirectory(plugins/renderer)
 add_subdirectory(plugins/gameplay_framework)
 
 target_link_libraries(game_engine

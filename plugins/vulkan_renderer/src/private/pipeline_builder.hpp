@@ -1,9 +1,8 @@
 #pragma once
 
-#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan_core.h>
 
 #include "core_include.hpp"
-#include "vulkan/vulkan_core.h"
 
 namespace vkutils {
 struct PipelineBuilder {

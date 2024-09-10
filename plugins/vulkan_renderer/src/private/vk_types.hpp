@@ -1,6 +1,5 @@
 #pragma once
 
-#include <deque>
 #include <vulkan/vulkan_core.h>
 #include <vma/vk_mem_alloc.h>
 
@@ -10,10 +9,22 @@
 
 #include "vk_verify.hpp"
 
+namespace res {
+struct VkEngine;
+}
+
 struct AllocatedBuffer {
 	VkBuffer buffer;
 	VmaAllocation allocation;
 	VmaAllocationInfo allocation_info;
+};
+
+struct AllocatedImage {
+	VkImage image = null;
+	VkImageView image_view = null;
+	VmaAllocation allocation = null;
+	VkExtent3D extent = {};
+	VkFormat format;
 };
 
 struct Vertex {
@@ -178,7 +189,7 @@ private:
 };
 
 struct DescriptorWriter {
-	auto write_image(const u32 binding, VkImageView image_view, VkSampler sampler, const VkImageLayout layout, const VkDescriptorType type) -> void {
+	auto write_image(const u32 binding, VkImageView image_view, VkSampler sampler, const VkImageLayout layout, const VkDescriptorType type) -> DescriptorWriter& {
 		auto& info = image_infos.emplace_back(VkDescriptorImageInfo{
 			.sampler = sampler,
 			.imageView = image_view,
@@ -192,9 +203,11 @@ struct DescriptorWriter {
 			.descriptorType = type,
 			.pImageInfo = &info,
 		});
+
+		return *this;
 	}
 
-	auto write_buffer(const u32 binding, VkBuffer buffer, const usize size, const usize offset, const VkDescriptorType type) -> void {
+	auto write_buffer(const u32 binding, VkBuffer buffer, const usize size, const usize offset, const VkDescriptorType type) -> DescriptorWriter& {
 		auto& info = buffer_infos.emplace_back(VkDescriptorBufferInfo{
 			.buffer = buffer,
 			.offset = offset,
@@ -209,6 +222,8 @@ struct DescriptorWriter {
 			.descriptorType = type,
 			.pBufferInfo = &info,
 		});
+
+		return *this;
 	}
 
 	auto clear() -> void {
@@ -251,4 +266,38 @@ struct RenderObject {
 	u32 index_count, first_index;
 	VkBuffer index_buffer;
 	VkDeviceAddress vertex_buffer_address;
+};
+
+struct MaterialProperties {
+	
+};
+
+struct GltfMetallicRoughness {
+	struct MaterialConstants {
+		glm::vec4 color_factors;
+		glm::vec4 metal_roughness_factors;
+
+		// Padding. Uniform buffers have an alignment of 256 bytes this extra data is required anyways.
+		glm::vec4 extra[14];
+	};
+
+	static_assert(sizeof(MaterialConstants) == 256);
+
+	struct MaterialResources {
+		AllocatedImage color_image;
+		VkSampler color_sampler;
+		AllocatedImage metal_roughness_image;
+		VkSampler metal_roughness_image_sampler;
+		VkBuffer data_buffer;
+		u32 data_buffer_offset;
+	};
+
+	auto build_pipelines(res::VkEngine& engine) -> void;
+	auto clear_resources(VkDevice device) -> void;
+	auto write_materials(VkDevice device, const MaterialPass pass, const MaterialResources& resources, DescriptorAllocatorGrowable& desc_allocator) -> MaterialInstance;
+
+	MaterialPipeline opaque_pipeline;
+	MaterialPipeline translucent_pipeline;
+	VkDescriptorSetLayout material_layout;// Shared between opaque and translucent pipelines.
+	DescriptorWriter writer;
 };

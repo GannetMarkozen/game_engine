@@ -7,6 +7,36 @@ template <typename... Comps>
 struct Query {
 	using Types = Tuple<Comps...>;
 
+	[[nodiscard]] auto get_single(const ExecContext& context) -> Tuple<Entity, Comps&...> {
+		if (previous_archetype_count != context.world.archetypes.size()) [[unlikely]] {
+			ScopeSharedLock _{context.world.archetypes_mutex};
+			update_matching_archetypes_assumes_locked(context.world);
+
+			ASSERTF(!matching_archetypes.empty(), "No matching archetypes for query {} !{}!", includes, excludes)
+		}
+
+		const auto it = std::ranges::find_if(matching_archetypes, [&](const Archetype* archetype) { return archetype->num_entities > 0; });
+		ASSERTF(it != matching_archetypes.end(), "No matching archetypes for query {} !{}!", includes, excludes);
+
+		Archetype& archetype = **it;
+		return {archetype.get_entity(0), archetype.get<std::decay_t<Comps>>(archetype.head_chunk, 0)...};
+	}
+
+	[[nodiscard]] auto try_get_single(const ExecContext& context) -> Optional<Tuple<Entity, Comps&...>> {
+		if (previous_archetype_count != context.world.archetypes.size()) {
+			ScopeSharedLock _{context.world.archetypes_mutex};
+			update_matching_archetypes_assumes_locked(context.world);
+		}
+
+		const auto it = std::ranges::find_if(matching_archetypes, [&](const Archetype* archetype) { return archetype->num_entities > 0; });
+		if (it == matching_archetypes.end()) {
+			return NULL_OPTIONAL;
+		}
+
+		Archetype& archetype = **it;
+		return Tuple<Entity, Comps&...>{archetype.get_entity(0), archetype.get<std::decay_t<Comps>>(archetype.head_chunk, 0)...};
+	}
+
 	auto for_each_view(const ExecContext& context, ::cpts::Invokable<usize, const Entity*, Comps*...> auto&& fn) -> void {
 		assert_has_valid_access_requirements(context);
 

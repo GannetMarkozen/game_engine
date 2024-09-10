@@ -1,13 +1,13 @@
 #pragma once
 
 #include "gameplay_framework.hpp"
-#include "vk_plugin.hpp"
+#include "renderer_plugin.hpp"
 
 struct App;
 
 struct DefaultPlugins {
 	GameplayFrameworkPlugin gameplay_framework;
-	VkPlugin vk;
+	RendererPlugin renderer;
 
 	auto init(App& app) -> void;
 };

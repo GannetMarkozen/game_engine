@@ -1,12 +1,13 @@
 #pragma once
 
-#define VULKAN_HPP_NO_EXCEPTIONS
-
-#include <vulkan/vulkan.hpp>
-
+#include <vulkan/vulkan_core.h>
 #include "types.hpp"
 
 struct App;
+
+namespace renderer {
+constexpr usize NUM_FRAMES_IN_FLIGHT = 2;
+}
 
 struct WindowConfig {
 	const char* [[clang::lifetimebound]] title = "GanEngine";
